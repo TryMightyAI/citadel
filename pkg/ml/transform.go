@@ -47,6 +47,59 @@ var (
 	reBase32 = regexp.MustCompile(`[A-Z2-7]{8,}={0,6}`)
 )
 
+// decoder defines a deobfuscation function and its associated metadata.
+// This table-driven approach eliminates ~80 lines of repetitive if/decode/append blocks.
+type decoder struct {
+	fn       func(string) string // Returns decoded string or "" if not applicable
+	obfType  ObfuscationType     // For metadata tracking
+	isChange bool                // True if fn returns modified text (not empty check)
+}
+
+// decoders is the ordered list of OSS deobfuscation functions to apply.
+// Pro-only decoders (TR39-lite confusable, advanced unicode) are registered via RegisterDecoder.
+var decoders = []decoder{
+	{TryBase64Decode, ObfuscationBase64, false},
+	{TryHexDecode, ObfuscationHex, false},
+	{TryURLDecode, ObfuscationURL, false},
+	{TryHTMLEntityDecode, ObfuscationHTML, false},
+	{TryROT13, ObfuscationROT13, false},
+	{NormalizeHomoglyphs, ObfuscationHomoglyphs, true}, // compare != input
+	{DetectASCIIArt, ObfuscationASCIIArt, false},
+	{TryReverseString, ObfuscationReverse, false},
+	{TryUnicodeTagsDecode, ObfuscationUnicodeTags, false},
+	{TryStripInvisibles, ObfuscationInvisibleChars, false},
+	{TryGzipDecompress, ObfuscationGzip, false},
+	{TryRawGzipDecompress, ObfuscationGzip, false},
+	{TryUnicodeEscapes, ObfuscationUnicodeEscapes, false},
+	{TryOctalEscapes, ObfuscationOctalEscapes, false},
+	{TryBase32Decode, ObfuscationBase32, false},
+	{TryTypoglycemiaDecode, ObfuscationTypoglycemia, false},
+	{TryLeetspeakDecode, ObfuscationLeetspeak, false},
+}
+
+// proDecoders holds additional decoders registered by Pro packages.
+// Use RegisterDecoder to add Pro-only decoders at init time.
+var proDecoders []decoder
+
+// RegisterDecoder adds a decoder to the Pro decoder list.
+// Call this from init() in Pro packages to register advanced decoders.
+// Example: ml.RegisterDecoder(TryConfusableSkeletonLite, ml.ObfuscationHomoglyphs, false)
+func RegisterDecoder(fn func(string) string, obfType ObfuscationType, isChange bool) {
+	proDecoders = append(proDecoders, decoder{fn: fn, obfType: obfType, isChange: isChange})
+}
+
+// allDecoders returns the combined list of OSS and Pro decoders.
+func allDecoders() []decoder {
+	if len(proDecoders) == 0 {
+		return decoders
+	}
+	// Combine: OSS decoders first, then Pro decoders
+	combined := make([]decoder, 0, len(decoders)+len(proDecoders))
+	combined = append(combined, decoders...)
+	combined = append(combined, proDecoders...)
+	return combined
+}
+
 // Deobfuscate attempts to decode various obfuscation techniques recursively (Depth=2)
 func Deobfuscate(text string) string {
 	// Pass 1
@@ -73,94 +126,31 @@ func Deobfuscate(text string) string {
 	return strings.Join(final, " ")
 }
 
-// runDecoders executes a single pass of all deobfuscation methods
+// runDecoders executes a single pass of all deobfuscation methods.
+// Table-driven approach reduces code from ~90 lines to ~20 lines.
+// Uses allDecoders() to include both OSS and Pro-registered decoders.
 func runDecoders(text string) []string {
 	var decoded []string
 
-	// 1. Base64 Decoding
-	if b64 := TryBase64Decode(text); b64 != "" {
-		decoded = append(decoded, b64)
+	// Apply all decoders (OSS + Pro registered)
+	for _, d := range allDecoders() {
+		result := d.fn(text)
+		if d.isChange {
+			// For transformations that return modified text (e.g., NormalizeHomoglyphs)
+			if result != text {
+				decoded = append(decoded, result)
+			}
+		} else {
+			// For decoders that return "" when not applicable
+			if result != "" {
+				decoded = append(decoded, result)
+			}
+		}
 	}
 
-	// 2. Hex Decoding
-	if hexStr := TryHexDecode(text); hexStr != "" {
-		decoded = append(decoded, hexStr)
-	}
-
-	// 3. URL Decoding
-	if urlStr := TryURLDecode(text); urlStr != "" {
-		decoded = append(decoded, urlStr)
-	}
-
-	// 4. HTML Entity Decoding
-	if htmlStr := TryHTMLEntityDecode(text); htmlStr != "" {
-		decoded = append(decoded, htmlStr)
-	}
-
-	// 5. ROT13 Decoding
-	if rot13Str := TryROT13(text); rot13Str != "" {
-		decoded = append(decoded, rot13Str)
-	}
-
-	// 6. Unicode Homoglyph Normalization
-	if homoStr := NormalizeHomoglyphs(text); homoStr != text {
-		decoded = append(decoded, homoStr)
-	}
-
-	// 7. ASCII Art Detection
-	if asciiStr := DetectASCIIArt(text); asciiStr != "" {
-		decoded = append(decoded, asciiStr)
-	}
-
-	// 7.5. Block ASCII Art
+	// Special case: Block ASCII Art detection (returns bool, adds fixed strings)
 	if IsBlockASCII(text) {
-		decoded = append(decoded, "POTENTIAL_ASCII_ART_INJECTION")
-		decoded = append(decoded, "OBFUSCATION_BLOCK_DETECTED")
-	}
-
-	// 8. Reverse String Detection
-	if revStr := TryReverseString(text); revStr != "" {
-		decoded = append(decoded, revStr)
-	}
-
-	// 9. Unicode Tag Smuggling
-	if tagStr := TryUnicodeTagsDecode(text); tagStr != "" {
-		decoded = append(decoded, tagStr)
-	}
-
-	// 10. Invisible Character Stripping (The Void fix)
-	if stripped := TryStripInvisibles(text); stripped != "" {
-		decoded = append(decoded, stripped)
-	}
-
-	// 11. Gzip Decompression (base64-encoded gzip)
-	if gzipStr := TryGzipDecompress(text); gzipStr != "" {
-		decoded = append(decoded, gzipStr)
-	}
-
-	// 11b. Raw Gzip Decompression (binary gzip files)
-	if rawGzipStr := TryRawGzipDecompress(text); rawGzipStr != "" {
-		decoded = append(decoded, rawGzipStr)
-	}
-
-	// 12. Unicode Escape Sequences (\uXXXX)
-	if unicodeStr := TryUnicodeEscapes(text); unicodeStr != "" {
-		decoded = append(decoded, unicodeStr)
-	}
-
-	// 13. Octal Escape Sequences (\XXX)
-	if octalStr := TryOctalEscapes(text); octalStr != "" {
-		decoded = append(decoded, octalStr)
-	}
-
-	// 14. Base32 Decoding
-	if base32Str := TryBase32Decode(text); base32Str != "" {
-		decoded = append(decoded, base32Str)
-	}
-
-	// 15. Leetspeak Decoding (NEW - dynamic normalization)
-	if leetStr := TryLeetspeakDecode(text); leetStr != "" {
-		decoded = append(decoded, leetStr)
+		decoded = append(decoded, "POTENTIAL_ASCII_ART_INJECTION", "OBFUSCATION_BLOCK_DETECTED")
 	}
 
 	return decoded
@@ -328,7 +318,7 @@ func TryLeetspeakDecode(text string) string {
 	}
 
 	// Check if normalized text reveals threat patterns
-	if detectsAttackPatterns(normalized) {
+	if DetectsAttackPatterns(normalized) {
 		return normalized
 	}
 
@@ -389,7 +379,7 @@ func TryReverseString(text string) string {
 
 	// Universal reverse detection: Check if reversed text shows attack patterns
 	// This catches FlipAttacks and other reverse-text obfuscation techniques
-	if detectsAttackPatterns(reversed) {
+	if DetectsAttackPatterns(reversed) {
 		return reversed
 	}
 
@@ -415,9 +405,10 @@ func TryReverseString(text string) string {
 	return ""
 }
 
-// detectsAttackPatterns checks if text contains common attack indicators
+// DetectsAttackPatterns checks if text contains common attack indicators
 // This is used for universal reverse detection to catch FlipAttacks
-func detectsAttackPatterns(text string) bool {
+// Exported for use by Pro decoders in pro/pkg/ml
+func DetectsAttackPatterns(text string) bool {
 	lowText := strings.ToLower(text)
 
 	// Instruction override patterns
@@ -604,7 +595,8 @@ func TryUnicodeTagsDecode(text string) string {
 
 func TryStripInvisibles(text string) string {
 	stripped := strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) {
+		if unicode.Is(unicode.Cf, r) || r == 0xFE0E || r == 0xFE0F ||
+			(r >= 0x1F3FB && r <= 0x1F3FF) || r == 0x20E3 {
 			return -1 // Drop
 		}
 		return r
@@ -1002,135 +994,38 @@ func DeobfuscateWithMetadata(text string) DeobfuscationResult {
 	return result
 }
 
-// runDecodersWithMetadataAndTypes is like runDecodersWithMetadata but also returns detected types
+// runDecodersWithMetadataAndTypes is like runDecodersWithMetadata but also returns detected types.
+// Table-driven approach reduces code from ~130 lines to ~30 lines.
+// Uses allDecoders() to include both OSS and Pro-registered decoders.
 func runDecodersWithMetadataAndTypes(text string, result *DeobfuscationResult) ([]string, []ObfuscationType) {
 	var decoded []string
 	var detectedTypes []ObfuscationType
 
-	// 1. Base64 Decoding
-	if b64 := TryBase64Decode(text); b64 != "" {
-		decoded = append(decoded, b64)
-		result.addObfuscationType(ObfuscationBase64, b64)
-		detectedTypes = append(detectedTypes, ObfuscationBase64)
+	// Apply all decoders (OSS + Pro registered)
+	for _, d := range allDecoders() {
+		decodedStr := d.fn(text)
+		if d.isChange {
+			// For transformations that return modified text (e.g., NormalizeHomoglyphs)
+			if decodedStr != text {
+				decoded = append(decoded, decodedStr)
+				result.addObfuscationType(d.obfType, decodedStr)
+				detectedTypes = append(detectedTypes, d.obfType)
+			}
+		} else {
+			// For decoders that return "" when not applicable
+			if decodedStr != "" {
+				decoded = append(decoded, decodedStr)
+				result.addObfuscationType(d.obfType, decodedStr)
+				detectedTypes = append(detectedTypes, d.obfType)
+			}
+		}
 	}
 
-	// 2. Hex Decoding
-	if hexStr := TryHexDecode(text); hexStr != "" {
-		decoded = append(decoded, hexStr)
-		result.addObfuscationType(ObfuscationHex, hexStr)
-		detectedTypes = append(detectedTypes, ObfuscationHex)
-	}
-
-	// 3. URL Decoding
-	if urlStr := TryURLDecode(text); urlStr != "" {
-		decoded = append(decoded, urlStr)
-		result.addObfuscationType(ObfuscationURL, urlStr)
-		detectedTypes = append(detectedTypes, ObfuscationURL)
-	}
-
-	// 4. HTML Entity Decoding
-	if htmlStr := TryHTMLEntityDecode(text); htmlStr != "" {
-		decoded = append(decoded, htmlStr)
-		result.addObfuscationType(ObfuscationHTML, htmlStr)
-		detectedTypes = append(detectedTypes, ObfuscationHTML)
-	}
-
-	// 5. ROT13 Decoding
-	if rot13Str := TryROT13(text); rot13Str != "" {
-		decoded = append(decoded, rot13Str)
-		result.addObfuscationType(ObfuscationROT13, rot13Str)
-		detectedTypes = append(detectedTypes, ObfuscationROT13)
-	}
-
-	// 6. Unicode Homoglyph Normalization
-	if homoStr := NormalizeHomoglyphs(text); homoStr != text {
-		decoded = append(decoded, homoStr)
-		result.addObfuscationType(ObfuscationHomoglyphs, homoStr)
-		detectedTypes = append(detectedTypes, ObfuscationHomoglyphs)
-	}
-
-	// 7. ASCII Art Detection
-	if asciiStr := DetectASCIIArt(text); asciiStr != "" {
-		decoded = append(decoded, asciiStr)
-		result.addObfuscationType(ObfuscationASCIIArt, asciiStr)
-		detectedTypes = append(detectedTypes, ObfuscationASCIIArt)
-	}
-
-	// 7.5. Block ASCII Art
+	// Special case: Block ASCII Art detection (returns bool, adds fixed strings)
 	if IsBlockASCII(text) {
 		decoded = append(decoded, "POTENTIAL_ASCII_ART_INJECTION")
 		result.addObfuscationType(ObfuscationBlockASCII, "block_detected")
 		detectedTypes = append(detectedTypes, ObfuscationBlockASCII)
-	}
-
-	// 8. Reverse String Detection
-	if revStr := TryReverseString(text); revStr != "" {
-		decoded = append(decoded, revStr)
-		result.addObfuscationType(ObfuscationReverse, revStr)
-		detectedTypes = append(detectedTypes, ObfuscationReverse)
-	}
-
-	// 9. Unicode Tag Smuggling
-	if tagStr := TryUnicodeTagsDecode(text); tagStr != "" {
-		decoded = append(decoded, tagStr)
-		result.addObfuscationType(ObfuscationUnicodeTags, tagStr)
-		detectedTypes = append(detectedTypes, ObfuscationUnicodeTags)
-	}
-
-	// 10. Invisible Character Stripping
-	if stripped := TryStripInvisibles(text); stripped != "" {
-		decoded = append(decoded, stripped)
-		result.addObfuscationType(ObfuscationInvisibleChars, stripped)
-		detectedTypes = append(detectedTypes, ObfuscationInvisibleChars)
-	}
-
-	// 11. Gzip Decompression
-	if gzipStr := TryGzipDecompress(text); gzipStr != "" {
-		decoded = append(decoded, gzipStr)
-		result.addObfuscationType(ObfuscationGzip, gzipStr)
-		detectedTypes = append(detectedTypes, ObfuscationGzip)
-	}
-
-	// 11b. Raw Gzip Decompression
-	if rawGzipStr := TryRawGzipDecompress(text); rawGzipStr != "" {
-		decoded = append(decoded, rawGzipStr)
-		result.addObfuscationType(ObfuscationGzip, rawGzipStr)
-		detectedTypes = append(detectedTypes, ObfuscationGzip)
-	}
-
-	// 12. Unicode Escape Sequences
-	if unicodeStr := TryUnicodeEscapes(text); unicodeStr != "" {
-		decoded = append(decoded, unicodeStr)
-		result.addObfuscationType(ObfuscationUnicodeEscapes, unicodeStr)
-		detectedTypes = append(detectedTypes, ObfuscationUnicodeEscapes)
-	}
-
-	// 13. Octal Escape Sequences
-	if octalStr := TryOctalEscapes(text); octalStr != "" {
-		decoded = append(decoded, octalStr)
-		result.addObfuscationType(ObfuscationOctalEscapes, octalStr)
-		detectedTypes = append(detectedTypes, ObfuscationOctalEscapes)
-	}
-
-	// 14. Base32 Decoding
-	if base32Str := TryBase32Decode(text); base32Str != "" {
-		decoded = append(decoded, base32Str)
-		result.addObfuscationType(ObfuscationBase32, base32Str)
-		detectedTypes = append(detectedTypes, ObfuscationBase32)
-	}
-
-	// 15. Typoglycemia Decoding
-	if typoStr := TryTypoglycemiaDecode(text); typoStr != "" {
-		decoded = append(decoded, typoStr)
-		result.addObfuscationType(ObfuscationTypoglycemia, typoStr)
-		detectedTypes = append(detectedTypes, ObfuscationTypoglycemia)
-	}
-
-	// 16. Leetspeak Decoding
-	if leetStr := TryLeetspeakDecode(text); leetStr != "" {
-		decoded = append(decoded, leetStr)
-		result.addObfuscationType(ObfuscationLeetspeak, leetStr)
-		detectedTypes = append(detectedTypes, ObfuscationLeetspeak)
 	}
 
 	return decoded, detectedTypes

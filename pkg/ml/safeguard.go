@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NineSunsInc/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/config"
 )
 
 // SafeguardDefaultTemperature is the default temperature for safeguard model

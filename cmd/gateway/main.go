@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/NineSunsInc/citadel/pkg/config"
-	"github.com/NineSunsInc/citadel/pkg/mcp"
-	"github.com/NineSunsInc/citadel/pkg/ml"
+	"github.com/TryMightyAI/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/mcp"
+	"github.com/TryMightyAI/citadel/pkg/ml"
 )
 
 const Version = "0.1.0"
@@ -270,16 +270,100 @@ func runHTTPServer(port string) {
 		return c.JSON(fiber.Map{"status": "ok", "version": Version})
 	})
 
-	// Scan endpoint
+	// Unified /scan endpoint with mode parameter
+	// mode: "input" (default) | "output" | "both"
+	//
+	// INPUT MODE: Full ML pipeline for user prompts (heuristics + BERT + semantic + LLM)
+	// OUTPUT MODE: Pattern-based scanning for LLM responses (credentials, injections, etc.)
+	// BOTH MODE: Run both input and output scanning in one call
 	app.Post("/scan", func(c fiber.Ctx) error {
+		var req struct {
+			Text string `json:"text"`
+			Mode string `json:"mode"` // "input" (default), "output", or "both"
+		}
+		if err := c.Bind().Body(&req); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+		}
+
+		if req.Text == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "text field is required"})
+		}
+
+		// Default to input mode
+		if req.Mode == "" {
+			req.Mode = "input"
+		}
+
+		switch req.Mode {
+		case "input":
+			// Full ML pipeline for user input protection
+			result := scanner.Scan(c.Context(), req.Text)
+			return c.JSON(result)
+
+		case "output":
+			// Pattern-based output scanning (fast, <1ms)
+			result := ml.ScanOutput(req.Text)
+			return c.JSON(result)
+
+		case "both":
+			// Run both input and output scanning
+			inputResult := scanner.Scan(c.Context(), req.Text)
+			outputResult := ml.ScanOutput(req.Text)
+
+			// Merge results - block if either blocks
+			decision := inputResult.Decision
+			if outputResult.RiskLevel == "CRITICAL" || outputResult.RiskLevel == "HIGH" {
+				if decision == "ALLOW" {
+					decision = "WARN"
+				}
+				if outputResult.RiskLevel == "CRITICAL" {
+					decision = "BLOCK"
+				}
+			}
+
+			return c.JSON(fiber.Map{
+				"decision":       decision,
+				"input_result":   inputResult,
+				"output_result":  outputResult,
+				"mode":           "both",
+			})
+
+		default:
+			return c.Status(400).JSON(fiber.Map{
+				"error": "invalid mode, must be: input, output, or both",
+			})
+		}
+	})
+
+	// Dedicated input scanning endpoint (convenience alias)
+	// Same as POST /scan with mode: "input"
+	app.Post("/scan/input", func(c fiber.Ctx) error {
 		var req struct {
 			Text string `json:"text"`
 		}
 		if err := c.Bind().Body(&req); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
 		}
-
+		if req.Text == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "text field is required"})
+		}
 		result := scanner.Scan(c.Context(), req.Text)
+		return c.JSON(result)
+	})
+
+	// Dedicated output scanning endpoint (convenience alias)
+	// Same as POST /scan with mode: "output"
+	app.Post("/scan/output", func(c fiber.Ctx) error {
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := c.Bind().Body(&req); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+		}
+		if req.Text == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "text field is required"})
+		}
+		result := ml.ScanOutput(req.Text)
 		return c.JSON(result)
 	})
 
@@ -318,7 +402,12 @@ func runHTTPServer(port string) {
 	})
 
 	log.Printf("Citadel OSS HTTP server starting on :%s", port)
-	log.Printf("Endpoints: GET /health, POST /scan, POST /mcp")
+	log.Printf("Endpoints:")
+	log.Printf("  GET  /health       - Health check")
+	log.Printf("  POST /scan         - Unified scanning (mode: input|output|both)")
+	log.Printf("  POST /scan/input   - Input protection (prompt injection)")
+	log.Printf("  POST /scan/output  - Output protection (credential leaks)")
+	log.Printf("  POST /mcp          - MCP JSON-RPC proxy")
 
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatal(err)

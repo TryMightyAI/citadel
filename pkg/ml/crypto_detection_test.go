@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NineSunsInc/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/config"
 )
 
 func TestDetectCryptoPatterns(t *testing.T) {

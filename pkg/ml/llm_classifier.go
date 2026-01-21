@@ -386,7 +386,7 @@ func (c *LLMClassifier) callLLM(ctx context.Context, reqBody openRouterRequest) 
 
 	// OpenRouter specific headers (ignored by Ollama)
 	if c.provider == ProviderOpenRouter {
-		req.Header.Set("HTTP-Referer", "https://github.com/nine-suns/secure-agents")
+		req.Header.Set("HTTP-Referer", "https://github.com/TryMightyAI/citadel")
 		req.Header.Set("X-Title", "SecureAgentsBuildathon")
 	}
 

@@ -39,6 +39,7 @@ const (
 	ObfuscationBidiOverride   ObfuscationType = "bidi_override"
 	ObfuscationCombiningChars ObfuscationType = "combining_chars"
 	ObfuscationLeetspeak      ObfuscationType = "leetspeak"
+	ObfuscationEmojiSeparator ObfuscationType = "emoji_separator"
 )
 
 // DetectionSignal represents a detection result from a single layer

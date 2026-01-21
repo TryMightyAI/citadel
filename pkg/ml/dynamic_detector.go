@@ -230,6 +230,20 @@ func (d *DynamicThreatDetector) AnalyzeText(text string) DynamicAnalysisResult {
 		})
 	}
 
+	// 6. Mixed-script within a token (strong homoglyph signal, e.g., Latin + Cyrillic in same word)
+	mixedTokens := detectMixedScriptTokens(text)
+	if len(mixedTokens) > 0 {
+		result.Signals = append(result.Signals, DynamicSignal{
+			Type:       "mixed_script_token",
+			Score:      0.55,
+			Confidence: 0.75,
+			Details: map[string]interface{}{
+				"tokens": mixedTokens,
+				"count":  len(mixedTokens),
+			},
+		})
+	}
+
 	// Combine signals into final score
 	result.FinalScore = d.combineSignals(result.Signals)
 	result.IsLikelyThreat = result.FinalScore >= 0.4
@@ -355,6 +369,60 @@ func analyzeCodeSwitching(text string) CodeSwitchAnalysis {
 	}
 }
 
+// detectMixedScriptTokens returns tokens that mix Latin with Cyrillic/Greek in the same word.
+// This is a strong indicator of homoglyph obfuscation.
+func detectMixedScriptTokens(text string) []string {
+	var tokens []string
+	var current []rune
+
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		token := string(current)
+		if hasLatinAndConfusableScripts(token) {
+			tokens = append(tokens, token)
+		}
+		current = current[:0]
+	}
+
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+
+	return tokens
+}
+
+func hasLatinAndConfusableScripts(token string) bool {
+	hasLatin := false
+	hasCyrillic := false
+	hasGreek := false
+
+	for _, r := range token {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		switch {
+		case unicode.In(r, unicode.Latin):
+			hasLatin = true
+		case unicode.In(r, unicode.Cyrillic):
+			hasCyrillic = true
+		case unicode.In(r, unicode.Greek):
+			hasGreek = true
+		}
+		if hasLatin && (hasCyrillic || hasGreek) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // analyzeCharacterDistribution detects anomalous character patterns
 func (d *DynamicThreatDetector) analyzeCharacterDistribution(text string) CharacterAnalysis {
 	if len(text) == 0 {
@@ -362,14 +430,18 @@ func (d *DynamicThreatDetector) analyzeCharacterDistribution(text string) Charac
 	}
 
 	var (
-		letters      int
-		digits       int
-		symbols      int
-		unicodeChars int
-		cjkChars     int // Track CJK specifically
-		invisible    int
-		spaces       int
-		total        = len([]rune(text))
+		letters          int
+		digits           int
+		symbols          int
+		unicodeChars     int
+		cjkChars         int // Track CJK specifically
+		latinChars       int
+		cyrillicChars    int
+		greekChars       int
+		otherScriptChars int
+		invisible        int
+		spaces           int
+		total            = len([]rune(text))
 	)
 
 	for _, r := range text {
@@ -380,6 +452,16 @@ func (d *DynamicThreatDetector) analyzeCharacterDistribution(text string) Charac
 				if isCJKChar(r) {
 					cjkChars++
 				}
+			}
+			switch {
+			case unicode.In(r, unicode.Latin):
+				latinChars++
+			case unicode.In(r, unicode.Cyrillic):
+				cyrillicChars++
+			case unicode.In(r, unicode.Greek):
+				greekChars++
+			default:
+				otherScriptChars++
 			}
 			letters++
 		case unicode.IsDigit(r):
@@ -433,14 +515,21 @@ func (d *DynamicThreatDetector) analyzeCharacterDistribution(text string) Charac
 	}
 
 	// Mixed unicode (potential homoglyphs)
-	// SKIP for CJK text: Chinese/Japanese/Korean with ASCII punctuation is normal
-	// The intent is to catch homoglyph attacks (e.g., Cyrillic 'а' in Latin text)
-	// not legitimate multilingual text
+	// Focus on Latin + Cyrillic/Greek mixing (common homoglyph attacks).
+	// Avoid flagging single-script non-Latin text (e.g., Greek, Cyrillic).
 	isPrimarilyCJK := cjkRatio > 0.5 || (cjkChars > 0 && unicodeChars == cjkChars)
-	if unicodeRatio > 0.1 && unicodeRatio < 0.9 && !isPrimarilyCJK {
-		isAnomalous = true
-		anomalyScore += unicodeRatio
-		details["mixed_unicode"] = unicodeRatio
+	if !isPrimarilyCJK && letters > 0 {
+		latinRatio := float64(latinChars) / float64(letters)
+		confusableCount := cyrillicChars + greekChars
+		confusableRatio := float64(confusableCount) / float64(letters)
+
+		if latinChars > 0 && confusableCount > 0 && latinRatio > 0.2 && confusableRatio > 0.05 {
+			isAnomalous = true
+			anomalyScore += unicodeRatio
+			details["mixed_unicode"] = unicodeRatio
+			details["latin_ratio"] = latinRatio
+			details["confusable_ratio"] = confusableRatio
+		}
 	}
 
 	if anomalyScore > 1.0 {
