@@ -305,9 +305,9 @@ func TestDetectsAttackPatterns(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := detectsAttackPatterns(tc.input)
+			result := DetectsAttackPatterns(tc.input)
 			if result != tc.shouldMatch {
-				t.Errorf("detectsAttackPatterns(%q) = %v, want %v", tc.input, result, tc.shouldMatch)
+				t.Errorf("DetectsAttackPatterns(%q) = %v, want %v", tc.input, result, tc.shouldMatch)
 			}
 		})
 	}

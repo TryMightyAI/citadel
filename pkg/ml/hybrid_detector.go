@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NineSunsInc/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/config"
 )
 
 // FastPathThresholds defines when to skip LLM entirely
@@ -38,7 +38,7 @@ type HybridDetector struct {
 	llmClassifier        *LLMClassifier
 	safeguardJudge       *SafeguardClient          // Tier 3 Escalation (OpenAI-compatible safeguard model)
 	geminiDrift          *GeminiDriftClient        // Fast visual drift detection via Gemini Flash
-	intentClient         *IntentClient             // Transformer-based intent classifier (Python vision service)
+	intentClient         IntentClassifier          // Transformer-based intent classifier (Python vision service)
 	intentTypeClassifier *IntentTypeClassifier     // PURPOSE-based intent classifier (semantic) - Pro
 	multiTurnDetector    *UnifiedMultiTurnDetector // Full multi-turn detection with semantic trajectory - Pro
 	mu                   sync.RWMutex
@@ -124,12 +124,6 @@ type HybridResult struct {
 	MultiTurnTurnCount      int     `json:"multi_turn_count,omitempty"`       // Number of turns in session
 	MultiTurnAggregateScore float64 `json:"multi_turn_agg_score,omitempty"`   // Aggregate semantic score
 	MultiTurnLatencyMs      float64 `json:"multi_turn_latency_ms,omitempty"`  // Multi-turn analysis latency
-
-	// TIS (Threat Intelligence Service) fields
-	TISEnabled  bool     `json:"tis_enabled,omitempty"`  // Was TIS used in detection
-	TISScore    float64  `json:"tis_score,omitempty"`    // Score from TIS pattern matching
-	TISPatterns []string `json:"tis_patterns,omitempty"` // Patterns matched by TIS
-	TISCategory string   `json:"tis_category,omitempty"` // Primary threat category from TIS
 }
 
 // NewHybridDetector creates a detector with heuristic, semantic, and LLM layers
@@ -204,22 +198,8 @@ func NewHybridDetector(ollamaURL, openRouterKey, openRouterModel string) (*Hybri
 	}
 
 	// Initialize Hugot detector (local ML via ONNX - graceful degradation if unavailable) - OSS
-	var hugotDetector *HugotDetector
-	HugotEnabled := false
-	hugotModelPath := os.Getenv("HUGOT_MODEL_PATH")
-	if hugotModelPath == "" {
-		hugotModelPath = "./models/sentinel"
-	}
-	// Only initialize Hugot if model exists or HUGOT_ENABLED is set
-	if os.Getenv("HUGOT_ENABLED") == "true" || fileExists(hugotModelPath) {
-		hugotDetector = NewHugotDetectorWithFallback(HugotConfig{
-			ModelPath:       hugotModelPath,
-			ModelName:       "qualifire/prompt-injection-sentinel",
-			OnnxLibraryPath: os.Getenv("ONNX_LIBRARY_PATH"),
-			UseGPU:          os.Getenv("HUGOT_USE_GPU") == "true",
-		})
-		HugotEnabled = hugotDetector != nil && hugotDetector.IsReady()
-	}
+	hugotDetector := NewAutoDetectedHugotDetector()
+	HugotEnabled := hugotDetector != nil && hugotDetector.IsReady()
 
 	// Initialize semantic detector with auto-detection:
 	// 0. Prefer Pro embedder if configured (OpenRouter Qwen3 embeddings)
@@ -269,12 +249,6 @@ func NewHybridDetector(ollamaURL, openRouterKey, openRouterModel string) (*Hybri
 		FastPathThresholds:   DefaultFastPathThresholds(),
 		AttackIntentScoreCap: 0.90, // Default cap for ATTACK intent boost (can trigger CRITICAL)
 	}, nil
-}
-
-// fileExists checks if a file or directory exists
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // Initialize loads semantic patterns and vector knowledge base (call once at startup)
@@ -597,6 +571,11 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	result.HeuristicScore = heuristicSignal.Score
 	result.HeuristicLatencyMs = heuristicSignal.LatencyMs
 
+	// v4.11: Save raw heuristic score BEFORE any modifiers
+	// This is used for BERT escalation decision - if raw score was high,
+	// we should escalate to BERT even if modifiers reduce it
+	rawHeuristicScore := result.HeuristicScore
+
 	// Check for secrets (TIER 0: Absolute rule)
 	// v4.8: Skip secrets blocking for log/code contexts where IPs and emails are expected
 	_, result.SecretsFound = hd.heuristic.RedactSecrets(text)
@@ -611,7 +590,9 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 			structCtx.Type == StructuralContextEmail ||
 			structCtx.Type == StructuralContextDocumentation ||
 			structCtx.Type == StructuralContextConfig ||
-			structCtx.Type == StructuralContextJSON
+			structCtx.Type == StructuralContextJSON ||
+			structCtx.Type == StructuralContextLegal || // v4.11: Legal documents
+			structCtx.Type == StructuralContextInvoice // v4.12: Invoices/receipts
 
 		if isTrustedContext {
 			// Don't block for secrets in trusted context - continue detection normally
@@ -723,6 +704,12 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// v4.10: STRUCTURAL CONTEXT DETECTION (always detect, conditionally dampen)
 	// Detect structural context for all inputs, but only apply heuristic dampening
 	// if score is above threshold. This ensures we can reuse context for semantic dampening.
+	//
+	// v4.11 SCALABLE FIX: Preserve pre-dampening score for BERT escalation decisions.
+	// Instead of hardcoding attack patterns, we let the ML model decide.
+	// If heuristic score was HIGH before dampening, we still escalate to BERT
+	// even if structural context would normally suppress it.
+	// This is scalable because BERT generalizes, patterns don't.
 	var structuralCtx *StructuralContextResult
 	{
 		ctx := DetectStructuralContext(text)
@@ -1186,10 +1173,18 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// 5. NEW: Contains action/request language (help, how to, create, make, etc.)
 	isSubstantiveRequest := isSubstantiveText(text)
 
+	// v4.11: Also escalate if RAW heuristic (before ANY modifiers) was high.
+	// This is the SCALABLE fix - context/domain/benign/structural modifiers
+	// may all reduce the score, but if the raw heuristic saw a strong attack
+	// signal, we should escalate to BERT and let ML decide.
+	// BERT generalizes; pattern lists don't.
+	rawScoreWasHigh := rawHeuristicScore >= 0.5
+
 	shouldEscalateToBERT := (result.CombinedScore >= 0.3 && result.CombinedScore <= 0.7) ||
 		deobResult.WasDeobfuscated ||
 		result.IntentType == "ATTACK" ||
 		isSubstantiveRequest || // NEW: Always check substantive requests with BERT
+		rawScoreWasHigh || // v4.11: Raw heuristic was high - let BERT decide
 		!hd.FastPathEnabled // Force BERT if FastPath is explicitly disabled
 
 	if intentEnabled && hd.intentClient != nil && shouldEscalateToBERT {
@@ -1331,56 +1326,6 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 					return result, nil
 				}
 
-				// ===============================================================
-				// Case 3: TIS (THREAT INTELLIGENCE SERVICE) - BERT uncertain
-				// Query TIS for threat pattern matching when BERT is uncertain.
-				// TIS provides adversarially-learned patterns that catch
-				// sophisticated evasion attacks BERT might miss.
-				// Text is already deobfuscated at this point.
-				// ===============================================================
-				tisClient := GetTISClient()
-				if tisClient.IsEnabled() {
-					result.TISEnabled = true
-
-					// Use deobfuscated text for TIS matching
-					tisText := text
-					if deobResult.WasDeobfuscated && deobResult.DecodedText != "" {
-						tisText = deobResult.DecodedText
-					}
-
-					tisResult, err := tisClient.Match(ctx, tisText)
-					if err == nil && tisResult != nil {
-						result.TISScore = tisResult.Score
-						result.TISPatterns = tisResult.Patterns
-						result.TISCategory = tisResult.Category
-
-						if tisResult.IsThreat && tisResult.Score >= 0.5 {
-							// TIS found a threat pattern - trust it over uncertain BERT
-							tisSignal := NewDetectionSignal(SignalSourceSemantic)
-							tisSignal.Label = "TIS_THREAT"
-							tisSignal.Score = tisResult.Score
-							tisSignal.Confidence = 0.85 // TIS patterns are learned/validated
-							for _, pattern := range tisResult.Patterns {
-								tisSignal.AddReason(fmt.Sprintf("TIS pattern: %s", pattern))
-							}
-							if tisResult.Category != "" {
-								tisSignal.AddReason(fmt.Sprintf("Category: %s", tisResult.Category))
-							}
-							aggregator.AddSignal(tisSignal)
-
-							// TIS verdict overrides uncertain BERT
-							result.CombinedScore = tisResult.Score
-							result.RiskLevel = "HIGH"
-							result.Action = "BLOCK"
-							result.DecisionPath = "TIS_BERT_UNCERTAIN"
-							result.Reason = fmt.Sprintf("TIS threat intelligence (BERT uncertain at %.0f%%): %s",
-								intentResult.Confidence*100, tisResult.Category)
-							result.Signals = aggregator.signals
-							result.TotalLatencyMs = float64(time.Since(startTotal).Microseconds()) / 1000.0
-							return result, nil
-						}
-					}
-				}
 			}
 
 			// High-confidence SAFE → ALLOW (skip Safeguard escalation)
@@ -1731,7 +1676,7 @@ func (hd *HybridDetector) runDeeperGoAnalysis(
 
 	// 5. Check for instruction override patterns in decoded text
 	if deobResult != nil && deobResult.DecodedText != "" {
-		if detectsAttackPatterns(deobResult.DecodedText) {
+		if DetectsAttackPatterns(deobResult.DecodedText) {
 			signal.Score = max(signal.Score, 0.75)
 			signal.AddReason("attack_patterns_in_decoded_text")
 		}
@@ -1768,4 +1713,24 @@ func (hd *HybridDetector) runDeeperGoAnalysis(
 	}
 
 	return signal
+}
+
+// Close releases any resources held by the detector (e.g., ONNX models)
+func (hd *HybridDetector) Close() error {
+	hd.mu.Lock()
+	defer hd.mu.Unlock()
+
+	var errs []string
+
+	// Close Hugot detector if it exists (OSS local ML)
+	if hd.hugot != nil {
+		if err := hd.hugot.Close(); err != nil {
+			errs = append(errs, fmt.Sprintf("hugot: %v", err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("close errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }

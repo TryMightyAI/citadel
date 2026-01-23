@@ -67,6 +67,7 @@ test-ml:
 		export CGO_LDFLAGS="-L$$onnx_lib -L$$tok_lib"; \
 		export LD_LIBRARY_PATH="$$onnx_lib:$$LD_LIBRARY_PATH"; \
 	fi; \
+	export CITADEL_ENABLE_HUGOT=true; \
 	export HUGOT_MODEL_PATH="$$(pwd)/models/modernbert-base"; \
 	go test -tags ORT -v ./pkg/ml/... -run Integration
 

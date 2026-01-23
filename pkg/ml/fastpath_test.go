@@ -23,6 +23,9 @@ func TestDefaultFastPathThresholds(t *testing.T) {
 func TestHybridDetector_FastPathEnabledByDefault(t *testing.T) {
 	// Create detector without LLM (to avoid external calls)
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -43,6 +46,9 @@ func TestHybridDetector_FastPathEnabledByDefault(t *testing.T) {
 
 func TestHybridDetector_EnableFastPath(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -62,6 +68,9 @@ func TestHybridDetector_EnableFastPath(t *testing.T) {
 
 func TestHybridDetector_SetFastPathThresholds(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -84,6 +93,9 @@ func TestHybridDetector_SetFastPathThresholds(t *testing.T) {
 
 func TestHybridDetector_FastPathBlock(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -115,6 +127,9 @@ func TestHybridDetector_FastPathBlock(t *testing.T) {
 
 func TestHybridDetector_FastPathAllow(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -145,6 +160,9 @@ func TestHybridDetector_FastPathAllow(t *testing.T) {
 
 func TestHybridDetector_FastPathDisabled(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -169,6 +187,9 @@ func TestHybridDetector_FastPathDisabled(t *testing.T) {
 
 func TestHybridDetector_FastPathSecretsStillBlocked(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -199,6 +220,9 @@ func TestHybridDetector_FastPathSecretsStillBlocked(t *testing.T) {
 
 func TestHybridDetector_FastPathLatency(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}
@@ -220,6 +244,9 @@ func TestHybridDetector_FastPathLatency(t *testing.T) {
 
 func TestHybridDetector_FastPathReason(t *testing.T) {
 	detector, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = detector.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create detector: %v", err)
 	}

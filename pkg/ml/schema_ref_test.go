@@ -254,7 +254,7 @@ func TestSchemaRef_Tier2_InternalReferences(t *testing.T) {
 			input: `{"$ref": "#/components/schemas/Error", "description": "Error response"}`,
 		},
 		{
-			name:  "complex_openapi_spec",
+			name: "complex_openapi_spec",
 			input: `{
 				"openapi": "3.0.0",
 				"paths": {
@@ -406,7 +406,7 @@ func TestSchemaRef_Tier2_LegitimateExternalAPIs(t *testing.T) {
 			input: `{"$ref": "https://management.azure.com/schemas/2019-04-01/deploymentTemplate.json"}`,
 		},
 		{
-			name:  "documentation_example",
+			name: "documentation_example",
 			input: `{
 				"description": "User schema from our API",
 				"$ref": "https://docs.example.com/api/v3/schemas/user.json"

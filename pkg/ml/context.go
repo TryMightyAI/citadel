@@ -1058,6 +1058,10 @@ const (
 	StructuralContextJobPosting   StructuralContextType = "job_posting"
 	StructuralContextAcademic     StructuralContextType = "academic_study"
 	StructuralContextQuotedSpeech StructuralContextType = "quoted_speech"
+	// v4.11: Legal documents (contracts, agreements, NDAs)
+	StructuralContextLegal StructuralContextType = "legal_document"
+	// v4.12: Invoices, receipts, and financial documents (OCR from images)
+	StructuralContextInvoice StructuralContextType = "invoice_receipt"
 )
 
 // StructuralContextResult contains the result of structural context detection
@@ -1190,6 +1194,80 @@ func DetectStructuralContext(text string) StructuralContextResult {
 		result.Confidence = minFloat64(float64(emailSignals)*0.2, 0.90)
 		result.Signals = append(result.Signals, "email_structure")
 		return result
+	}
+
+	// 3b. INVOICE/RECEIPT DETECTION (v4.12)
+	// Common patterns from OCR of invoices, receipts, financial documents
+	// CRITICAL: Check for attack patterns FIRST - don't apply invoice dampening to attacks
+	lowerText := strings.ToLower(text)
+	attackPatterns := []string{
+		"ignore all", "ignore previous", "ignore your", "disregard",
+		"system prompt", "reveal your", "show me your",
+		"you are now", "you are dan", "jailbreak",
+		"bypass", "override", "disable safety",
+		"forget your", "new instructions",
+	}
+	hasAttackPattern := false
+	for _, pattern := range attackPatterns {
+		if strings.Contains(lowerText, pattern) {
+			hasAttackPattern = true
+			break
+		}
+	}
+	// If attack patterns found, skip invoice detection entirely
+	// This ensures attacks hidden in invoices are still caught
+	if !hasAttackPattern {
+		invoiceSignals := 0
+		// Strong invoice signals (unique to financial documents)
+		strongInvoicePatterns := []string{
+			"invoice", "inv-", "invoice #", "invoice number",
+			"bill to:", "bill to", "billed to",
+			"subtotal:", "subtotal", "sub total",
+			"total due:", "total due", "amount due",
+			"due date:", "due date", "payment due",
+			"payment terms", "net 30", "net 15", "net 60",
+			"tax:", "sales tax", "vat:",
+			"receipt", "order #", "order number",
+			"qty", "quantity", "unit price", "line total",
+			"thank you for your", "thank you for shopping",
+			"cashier:", "cashier", "register:",
+			"card ending", "paid with", "payment method",
+		}
+		for _, pattern := range strongInvoicePatterns {
+			if strings.Contains(lowerText, pattern) {
+				invoiceSignals += 2
+			}
+		}
+		// Weak invoice signals (common but not unique)
+		weakInvoicePatterns := []string{
+			"description", "amount", "price", "total",
+			"date:", "address:", "phone:", "email:",
+			"$", "usd", "eur", "gbp",
+		}
+		for _, pattern := range weakInvoicePatterns {
+			if strings.Contains(lowerText, pattern) {
+				invoiceSignals++
+			}
+		}
+		// Number patterns common in invoices (prices, quantities)
+		// Count lines with currency patterns like $123.45 or 123.00
+		pricePattern := 0
+		for _, line := range lines {
+			if strings.Contains(line, "$") || strings.Contains(line, ".00") ||
+				strings.Contains(line, ".99") || strings.Contains(line, ".95") {
+				pricePattern++
+			}
+		}
+		if pricePattern >= 2 {
+			invoiceSignals += 2
+		}
+		// Require strong signals (invoice-specific terms) OR many weak signals
+		if invoiceSignals >= 4 {
+			result.Type = StructuralContextInvoice
+			result.Confidence = minFloat64(float64(invoiceSignals)*0.12, 0.90)
+			result.Signals = append(result.Signals, "invoice_structure")
+			return result
+		}
 	}
 
 	// 4. LOG FORMAT DETECTION
@@ -1348,6 +1426,46 @@ func DetectStructuralContext(text string) StructuralContextResult {
 		result.Type = StructuralContextAcademic
 		result.Confidence = minFloat64(float64(academicSignals)*0.2, 0.90)
 		result.Signals = append(result.Signals, "professional_discourse")
+		return result
+	}
+
+	// 4b. LEGAL DOCUMENT DETECTION (v4.11)
+	// Contracts, agreements, NDAs have distinctive legal language patterns
+	// These naturally contain directive language ("shall", "must") that could be misclassified
+	legalSignals := 0
+	// Key legal document indicators
+	legalPatterns := []string{
+		"agreement", "contract", "hereby", "herein", "hereto", "thereof",
+		"whereas", "now, therefore", "in witness whereof", "witnesseth",
+		"parties agree", "provider shall", "client shall", "party shall",
+		"effective date", "term and termination", "confidentiality",
+		"indemnification", "governing law", "jurisdiction",
+		"warranties", "limitation of liability", "force majeure",
+		"master service agreement", "non-disclosure agreement", "nda",
+		"terms of service", "terms and conditions", "privacy policy",
+	}
+	for _, pattern := range legalPatterns {
+		if strings.Contains(lower, pattern) {
+			legalSignals++
+		}
+	}
+	// Strong legal signals - these are very specific to legal documents
+	strongLegalSignals := 0
+	strongLegalPatterns := []string{
+		"whereas", "now, therefore", "in witness whereof", "witnesseth",
+		"master service agreement", "herein", "hereto", "thereof",
+	}
+	for _, pattern := range strongLegalPatterns {
+		if strings.Contains(lower, pattern) {
+			strongLegalSignals++
+		}
+	}
+	// Require 3+ weak signals OR 1+ strong signals
+	if legalSignals >= 3 || strongLegalSignals >= 1 {
+		confidence := minFloat64(float64(legalSignals)*0.15+float64(strongLegalSignals)*0.3, 0.95)
+		result.Type = StructuralContextLegal
+		result.Confidence = confidence
+		result.Signals = append(result.Signals, "legal_document_language")
 		return result
 	}
 
@@ -1517,6 +1635,8 @@ func DetectStructuralContext(text string) StructuralContextResult {
 
 	// 11. CONFIG FILE DETECTION
 	// YAML/JSON structure, key: value patterns, indentation
+	// v4.11: Skip lines that contain attack patterns - those aren't config
+	attackKeywords := []string{"ignore", "bypass", "override", "disregard", "forget", "reveal", "exfiltrate", "pretend", "jailbreak"}
 	configSignals := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -1524,7 +1644,18 @@ func DetectStructuralContext(text string) StructuralContextResult {
 		if strings.Contains(trimmed, ": ") && !strings.HasPrefix(trimmed, "#") {
 			parts := strings.SplitN(trimmed, ": ", 2)
 			if len(parts) == 2 && len(parts[0]) > 0 && !strings.Contains(parts[0], " ") {
-				configSignals++
+				// v4.11: Check if value contains attack keywords
+				valueLower := strings.ToLower(parts[1])
+				isAttackLine := false
+				for _, kw := range attackKeywords {
+					if strings.Contains(valueLower, kw) {
+						isAttackLine = true
+						break
+					}
+				}
+				if !isAttackLine {
+					configSignals++
+				}
 			}
 		}
 		// Indented lines (YAML structure)
@@ -1580,6 +1711,10 @@ var structuralDampeningFactors = map[StructuralContextType]StructuralDampeningCo
 	StructuralContextJobPosting:   {BaseFactor: 0.60, MinResult: 0.20}, // High trust - job descriptions
 	StructuralContextAcademic:     {BaseFactor: 0.60, MinResult: 0.20}, // High trust - academic/linguistic
 	StructuralContextQuotedSpeech: {BaseFactor: 0.55, MinResult: 0.25}, // Moderate trust - customer feedback
+	// v4.11: Legal documents - high trust (contracts use directive language like "shall")
+	StructuralContextLegal: {BaseFactor: 0.60, MinResult: 0.15}, // High trust - formal legal language
+	// v4.12: Invoices/receipts - high trust (OCR from financial documents)
+	StructuralContextInvoice: {BaseFactor: 0.65, MinResult: 0.10}, // High trust - financial documents
 }
 
 // GetStructuralDampeningFactor returns the dampening factor for a context type
@@ -1595,8 +1730,18 @@ func GetStructuralDampeningFactor(ctxType StructuralContextType, confidence floa
 // ShouldDampenBERTDecision returns true if structural context suggests we should
 // reduce confidence in a BERT INJECTION classification.
 // This is the key integration point for reducing false positives.
+//
+// v4.11: When BERT is extremely confident (>98%), trust BERT over structural context.
+// BERT is trained on adversarial examples including attacks hidden in documents,
+// configs, and other structured content. If BERT says 98%+ INJECTION, trust it.
 func ShouldDampenBERTDecision(text string, bertLabel string, bertConfidence float64) (bool, float64, string) {
 	if bertLabel != "INJECTION" {
+		return false, bertConfidence, ""
+	}
+
+	// v4.11: Extremely high BERT confidence overrides structural context
+	// BERT is trained on adversarial examples - trust it when it's very sure
+	if bertConfidence >= 0.98 {
 		return false, bertConfidence, ""
 	}
 

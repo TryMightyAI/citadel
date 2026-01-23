@@ -329,6 +329,9 @@ func ListAvailableModels() []ModelInfo {
 // NewAutoDetectedHugotDetector creates a detector using auto-detected models.
 // Returns nil if no models are available.
 func NewAutoDetectedHugotDetector() *HugotDetector {
+	if !HugotEnabled() {
+		return nil
+	}
 	cfg := AutoDetectConfig()
 	if cfg == nil {
 		return nil

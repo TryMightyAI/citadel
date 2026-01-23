@@ -108,11 +108,13 @@ cd ~/tokenizers && make build
 # macOS ARM64
 export CGO_LDFLAGS="-L$HOME/onnxruntime-osx-arm64-1.23.2/lib -L$HOME/tokenizers"
 export DYLD_LIBRARY_PATH="$HOME/onnxruntime-osx-arm64-1.23.2/lib:$DYLD_LIBRARY_PATH"
+export CITADEL_ENABLE_HUGOT=true
 export HUGOT_MODEL_PATH="$(pwd)/models/modernbert-base"
 
 # Linux x64
 export CGO_LDFLAGS="-L$HOME/onnxruntime-linux-x64-1.23.2/lib -L/usr/local/lib"
 export LD_LIBRARY_PATH="$HOME/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH"
+export CITADEL_ENABLE_HUGOT=true
 export HUGOT_MODEL_PATH="$(pwd)/models/modernbert-base"
 ```
 

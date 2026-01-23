@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -44,7 +45,7 @@ type FileSystemPolicy struct {
 type Config struct {
 	// === Core Settings ===
 	AuditLogPath        string // Path to audit log file (default: "audit_events.jsonl")
-	GraphonPolicyPath   string // Path to policy file (default: "")
+	VisionInternalToken string // Internal token for Go->Python auth (optional)
 	EnableHumanApproval bool   // Require human approval for high-risk actions (default: false)
 
 	// === LLM Provider Configuration ===
@@ -92,7 +93,7 @@ func NewDefaultConfig() *Config {
 	cfg := &Config{
 		// Core
 		AuditLogPath:        GetEnv("CITADEL_AUDIT_LOG", "audit_events.jsonl"),
-		GraphonPolicyPath:   GetEnv("CITADEL_POLICY_PATH", ""),
+		VisionInternalToken: GetEnv("CITADEL_VISION_INTERNAL_TOKEN", ""),
 		EnableHumanApproval: GetEnvBool("CITADEL_HUMAN_APPROVAL", false),
 
 		// LLM Provider - defaults to OpenRouter if key is set, otherwise Ollama if available, else none
@@ -303,4 +304,76 @@ func GetEnvSlice(key string, defaultValue []string) []string {
 		}
 	}
 	return defaultValue
+}
+
+// RequiredSecret defines a required environment variable for startup validation
+type RequiredSecret struct {
+	Name        string // Environment variable name
+	Description string // Human-readable description
+	Production  bool   // Required in production only (false = required always)
+}
+
+// CriticalSecrets returns the list of secrets required for the gateway to operate
+func CriticalSecrets() []RequiredSecret {
+	return []RequiredSecret{
+		// Required in production for session security
+		{Name: "CITADEL_SESSION_SECRET", Description: "HMAC secret for session tokens (32+ bytes)", Production: true},
+		// Required in production for API authentication
+		{Name: "CITADEL_API_KEY", Description: "API key for gateway authentication", Production: true},
+	}
+}
+
+// Validate checks that all required configuration is present.
+// In production mode, this will return an error if critical secrets are missing.
+// In development mode, it logs warnings but allows startup for local testing.
+func (c *Config) Validate() error {
+	isProduction := strings.ToLower(os.Getenv("CITADEL_ENV")) == "production" ||
+		strings.ToLower(os.Getenv("CITADEL_ENV")) == "prod"
+
+	var missing []string
+	var warnings []string
+
+	for _, secret := range CriticalSecrets() {
+		value := os.Getenv(secret.Name)
+		if value == "" {
+			if secret.Production && !isProduction {
+				// Only required in production, we're in dev - warn only
+				warnings = append(warnings, secret.Name+" ("+secret.Description+")")
+			} else if !secret.Production {
+				// Always required
+				missing = append(missing, secret.Name+" ("+secret.Description+")")
+			} else if secret.Production && isProduction {
+				// Required in production and we ARE in production
+				missing = append(missing, secret.Name+" ("+secret.Description+")")
+			}
+		}
+	}
+
+	// Additional validation: session secret should be at least 32 bytes in production
+	if isProduction {
+		if secret := c.SessionSecret; len(secret) < 32 {
+			missing = append(missing, "CITADEL_SESSION_SECRET (must be at least 32 characters)")
+		}
+	}
+
+	// Log warnings for missing optional secrets
+	for _, w := range warnings {
+		log.Printf("[STARTUP] Warning: Missing optional secret: %s", w)
+	}
+
+	// Fail if critical secrets are missing
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required secrets: %s", strings.Join(missing, ", "))
+	}
+
+	return nil
+}
+
+// MustValidate calls Validate and fatally exits if validation fails.
+// Call this at startup before starting the server.
+func (c *Config) MustValidate() {
+	if err := c.Validate(); err != nil {
+		log.Fatalf("[STARTUP] FATAL: Configuration validation failed: %v", err)
+	}
+	log.Println("[STARTUP] Configuration validated successfully")
 }

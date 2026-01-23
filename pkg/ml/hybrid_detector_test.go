@@ -11,6 +11,9 @@ func TestHybridDetector_ConcurrentDetectAndSetWeights(t *testing.T) {
 	// This test verifies that concurrent calls to Detect() and SetWeights()
 	// do not cause data races. Run with -race flag to verify.
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -72,6 +75,9 @@ func TestHybridDetector_ConcurrentDetectAndSetWeights(t *testing.T) {
 
 func TestHybridDetector_SetWeights(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -97,6 +103,9 @@ func TestHybridDetector_SetWeights(t *testing.T) {
 
 func TestHybridDetector_EnableSemantic(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -122,6 +131,9 @@ func TestHybridDetector_EnableSemantic(t *testing.T) {
 
 func TestHybridDetector_Detect_SecretsBlock(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -129,7 +141,7 @@ func TestHybridDetector_Detect_SecretsBlock(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with text containing what looks like a secret
-	result, err := hd.Detect(ctx, "Here is my API key: sk_live_1234567890abcdef")
+	result, err := hd.Detect(ctx, "Here is my API key: rk_live_XXXXXXXXXXXXXXXX")
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}
@@ -146,6 +158,9 @@ func TestHybridDetector_Detect_SecretsBlock(t *testing.T) {
 
 func TestHybridDetector_Detect_BenignText(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -167,6 +182,9 @@ func TestHybridDetector_Detect_BenignText(t *testing.T) {
 
 func TestHybridDetector_Detect_MaliciousText(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}
@@ -190,6 +208,9 @@ func TestHybridDetector_Detect_MaliciousText(t *testing.T) {
 
 func TestHybridDetector_WeightsUsedCorrectly(t *testing.T) {
 	hd, err := NewHybridDetector("", "", "")
+	if err == nil {
+		defer func() { _ = hd.Close() }()
+	}
 	if err != nil {
 		t.Fatalf("Failed to create HybridDetector: %v", err)
 	}

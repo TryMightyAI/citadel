@@ -7,12 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/TryMightyAI/citadel/pkg/httputil"
 )
 
 // OpenRouterEmbedder implements EmbeddingProvider using OpenRouter API.
@@ -84,14 +85,12 @@ func NewOpenRouterEmbedder(cfg OpenRouterEmbedderConfig) (*OpenRouterEmbedder, e
 	}
 
 	embedder := &OpenRouterEmbedder{
-		apiKey:    cfg.APIKey,
-		baseURL:   cfg.BaseURL,
-		model:     cfg.Model,
-		dimension: cfg.Dimension,
-		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
-		},
-		minInterval: 50 * time.Millisecond, // Rate limit: max 20 req/sec
+		apiKey:      cfg.APIKey,
+		baseURL:     cfg.BaseURL,
+		model:       cfg.Model,
+		dimension:   cfg.Dimension,
+		httpClient:  httputil.MediumClient(), // Shared client with connection pooling (30s timeout)
+		minInterval: 50 * time.Millisecond,   // Rate limit: max 20 req/sec
 	}
 
 	log.Printf("[EMBEDDER] OpenRouter initialized: model=%s, dim=%d", cfg.Model, cfg.Dimension)
@@ -177,10 +176,10 @@ func (e *OpenRouterEmbedder) EmbedBatch(ctx context.Context, texts []string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("embedding request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer httputil.DrainAndClose(resp.Body)
 
-	// Read response
-	body, err := io.ReadAll(resp.Body)
+	// Read response with bounded size to prevent OOM
+	body, err := httputil.ReadResponseBody(resp.Body, httputil.MaxResponseSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

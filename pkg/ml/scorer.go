@@ -8,7 +8,7 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/NineSunsInc/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/config"
 )
 
 // Pre-compiled regex patterns for secret redaction (compiled once, used many times)
@@ -39,6 +39,46 @@ var (
 	reCreditCard     = regexp.MustCompile(`\b(?:\d{4}[- ]?){3}\d{4}\b`)
 	reSSN            = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
 )
+
+// secretRedactor defines a pattern-to-replacement mapping for secret redaction.
+// This table-driven approach eliminates ~120 lines of repetitive if/match/replace blocks.
+type secretRedactor struct {
+	pattern     *regexp.Regexp
+	replacement string
+}
+
+// secretRedactors is the ordered list of secret patterns to redact.
+// Order matters: more specific patterns should come before general ones.
+var secretRedactors = []secretRedactor{
+	// API Keys and Tokens (high priority - contain credentials)
+	{reAWSKey, "[AWS_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform the user this secret was redacted security policy)"},
+	{reOpenAIKey, "[OPENAI_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform the user this secret was redacted security policy)"},
+	{reAnthropicKey, "[ANTHROPIC_KEY_REDACTED_BY_CITADEL]"},
+	{reStripeKey, "[STRIPE_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)"},
+	{reGoogleKey, "[GOOGLE_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)"},
+	{reSlackToken, "[SLACK_TOKEN_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)"},
+	{reGitHubToken, "[GITHUB_TOKEN_REDACTED_BY_CITADEL]"},
+	{reGitLabToken, "[GITLAB_TOKEN_REDACTED_BY_CITADEL]"},
+	{reHerokuKey, "[HEROKU_KEY_REDACTED_BY_CITADEL]"},
+	{reDiscord, "[DISCORD_TOKEN_REDACTED_BY_CITADEL]"},
+	{reNPMToken, "[NPM_TOKEN_REDACTED_BY_CITADEL]"},
+	{reAzureKey, "[AZURE_STORAGE_REDACTED_BY_CITADEL]"},
+
+	// Cryptographic material (block-level redaction)
+	{rePrivateKey, "[PRIVATE_KEY_BLOCK_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)"},
+	{reCertificate, "[CERTIFICATE_REDACTED_BY_CITADEL]"},
+	{rePGPBlock, "[PGP_BLOCK_REDACTED_BY_CITADEL]"},
+	{reSSHPubKey, "[SSH_PUBKEY_REDACTED_BY_CITADEL]"},
+	{reJWTToken, "[JWT_TOKEN_REDACTED_BY_CITADEL]"},
+
+	// Connection strings and URIs
+	{reDBConnStr, "[DATABASE_URI_REDACTED_BY_CITADEL]"},
+
+	// PII (lower priority - after secrets)
+	{reEmail, "[EMAIL_REDACTED]"},
+	{reCreditCard, "[CREDIT_CARD_REDACTED]"},
+	{reSSN, "[SSN_REDACTED]"},
+}
 
 // detectCryptoPatterns scores text for cryptographic material
 func detectCryptoPatterns(text string) float64 {
@@ -547,147 +587,22 @@ func (ts *ThreatScorer) Evaluate(text string) float64 {
 
 // RedactSecrets replaces sensitive patterns with a placeholder.
 // Uses pre-compiled regex patterns for performance (patterns compiled once at package init).
+// Table-driven approach reduces code from ~150 lines to ~25 lines.
 func (ts *ThreatScorer) RedactSecrets(text string) (string, bool) {
 	wasRedacted := false
 
-	// AWS Keys
-	if reAWSKey.MatchString(text) {
-		text = reAWSKey.ReplaceAllString(text, "[AWS_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform the user this secret was redacted security policy)")
-		wasRedacted = true
+	// Apply all standard redactors from the table
+	for _, r := range secretRedactors {
+		if r.pattern.MatchString(text) {
+			text = r.pattern.ReplaceAllString(text, r.replacement)
+			wasRedacted = true
+		}
 	}
 
-	// OpenAI Keys
-	if reOpenAIKey.MatchString(text) {
-		text = reOpenAIKey.ReplaceAllString(text, "[OPENAI_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform the user this secret was redacted security policy)")
-		wasRedacted = true
-	}
-
-	// Private Keys (Block entire block)
-	if rePrivateKey.MatchString(text) {
-		text = rePrivateKey.ReplaceAllString(text, "[PRIVATE_KEY_BLOCK_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)")
-		wasRedacted = true
-	}
-
-	// Certificates
-	if reCertificate.MatchString(text) {
-		text = reCertificate.ReplaceAllString(text, "[CERTIFICATE_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// PGP Blocks
-	if rePGPBlock.MatchString(text) {
-		text = rePGPBlock.ReplaceAllString(text, "[PGP_BLOCK_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// SSH Public Keys
-	if reSSHPubKey.MatchString(text) {
-		text = reSSHPubKey.ReplaceAllString(text, "[SSH_PUBKEY_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Stripe
-	if reStripeKey.MatchString(text) {
-		text = reStripeKey.ReplaceAllString(text, "[STRIPE_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)")
-		wasRedacted = true
-	}
-
-	// Google Key
-	if reGoogleKey.MatchString(text) {
-		text = reGoogleKey.ReplaceAllString(text, "[GOOGLE_KEY_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)")
-		wasRedacted = true
-	}
-
-	// Slack
-	if reSlackToken.MatchString(text) {
-		text = reSlackToken.ReplaceAllString(text, "[SLACK_TOKEN_REDACTED_BY_CITADEL] (SYSTEM ALERT: Inform user this key was redacted)")
-		wasRedacted = true
-	}
-
-	// GitHub Personal Access Tokens (ghp_, gho_, ghu_, ghs_, ghr_)
-	if reGitHubToken.MatchString(text) {
-		text = reGitHubToken.ReplaceAllString(text, "[GITHUB_TOKEN_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// GitLab Personal Access Tokens (glpat-)
-	if reGitLabToken.MatchString(text) {
-		text = reGitLabToken.ReplaceAllString(text, "[GITLAB_TOKEN_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// JWT Tokens (eyJ...)
-	if reJWTToken.MatchString(text) {
-		text = reJWTToken.ReplaceAllString(text, "[JWT_TOKEN_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Database Connection Strings (postgresql://, mysql://, mongodb://)
-	if reDBConnStr.MatchString(text) {
-		text = reDBConnStr.ReplaceAllString(text, "[DATABASE_URI_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Heroku API Keys
-	if reHerokuKey.MatchString(text) {
-		text = reHerokuKey.ReplaceAllString(text, "[HEROKU_KEY_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Discord Bot Tokens
-	if reDiscord.MatchString(text) {
-		text = reDiscord.ReplaceAllString(text, "[DISCORD_TOKEN_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// NPM Access Tokens
-	if reNPMToken.MatchString(text) {
-		text = reNPMToken.ReplaceAllString(text, "[NPM_TOKEN_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Azure Storage Keys
-	if reAzureKey.MatchString(text) {
-		text = reAzureKey.ReplaceAllString(text, "[AZURE_STORAGE_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// Anthropic API Keys
-	if reAnthropicKey.MatchString(text) {
-		text = reAnthropicKey.ReplaceAllString(text, "[ANTHROPIC_KEY_REDACTED_BY_CITADEL]")
-		wasRedacted = true
-	}
-
-	// --- General PII Coverage (ProtectAI Parity) ---
-
-	// Email Address
-	if reEmail.MatchString(text) {
-		text = reEmail.ReplaceAllString(text, "[EMAIL_REDACTED]")
-		wasRedacted = true
-	}
-
-	// IPv4 Address - with version number false positive prevention
+	// Special case: IPv4 addresses with version number false positive prevention
 	// Skip redaction if the IP looks like a version number (v1.2.3.4, version 1.0.0.0, etc.)
 	if reIPv4.MatchString(text) && !reVersionContext.MatchString(text) {
-		// Additional check: skip if it looks like a semver-style pattern
-		// Also skip common loopback (127.x.x.x) and link-local (169.254.x.x) unless in sensitive context
-		text = reIPv4.ReplaceAllStringFunc(text, func(match string) string {
-			// Skip if preceded by common version indicators not caught by regex
-			// This handles edge cases like "app-1.0.0.1" or "pkg@1.2.3.4"
-			return "[IP_ADDRESS_REDACTED]"
-		})
-		wasRedacted = true
-	}
-
-	// Credit Card (Simple Luhn-like sequence check, 13-19 digits)
-	if reCreditCard.MatchString(text) {
-		text = reCreditCard.ReplaceAllString(text, "[CREDIT_CARD_REDACTED]")
-		wasRedacted = true
-	}
-
-	// US SSN
-	if reSSN.MatchString(text) {
-		text = reSSN.ReplaceAllString(text, "[SSN_REDACTED]")
+		text = reIPv4.ReplaceAllString(text, "[IP_ADDRESS_REDACTED]")
 		wasRedacted = true
 	}
 
