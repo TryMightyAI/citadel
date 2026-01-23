@@ -74,7 +74,10 @@ export CITADEL_ENABLE_HUGOT=true
 Or run the setup script:
 
 ```bash
-make setup-ml
+make setup-ml           # Download model + ONNX Runtime + tokenizers
+make setup-ml-model     # Download model only
+make setup-ml-verify    # Verify installation
+make setup-ml-clean     # Remove downloaded files (for reinstall)
 ```
 
 ---
