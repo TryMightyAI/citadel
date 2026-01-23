@@ -27,6 +27,22 @@ func (r *Registry) registerCredentialPatterns() {
 	r.register("github_app", `(?i)ghs_[0-9a-zA-Z]{36}`, cat, 85, "GitHub App Token")
 	r.register("github_refresh", `(?i)ghr_[0-9a-zA-Z]{36}`, cat, 85, "GitHub Refresh Token")
 
+	// Slack
+	r.register("slack_bot_token", `xoxb-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}`, cat, 85, "Slack Bot Token")
+	r.register("slack_user_token", `xoxp-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}`, cat, 85, "Slack User Token")
+	r.register("slack_app_token", `xapp-[0-9]-[A-Z0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{64}`, cat, 85, "Slack App Token")
+	r.register("slack_webhook", `https://hooks\.slack\.com/services/T[A-Z0-9]{8,}/B[A-Z0-9]{8,}/[a-zA-Z0-9]{24}`, cat, 80, "Slack Webhook URL")
+
+	// Twilio
+	r.register("twilio_account_sid", `AC[a-f0-9]{32}`, cat, 75, "Twilio Account SID")
+	r.register("twilio_auth_token", `(?i)(twilio[_-]?auth[_-]?token|TWILIO_AUTH_TOKEN)\s*[=:]\s*['"]?[a-f0-9]{32}`, cat, 85, "Twilio Auth Token")
+
+	// SendGrid
+	r.register("sendgrid_api_key", `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, cat, 85, "SendGrid API Key")
+
+	// Mailchimp
+	r.register("mailchimp_api_key", `[a-f0-9]{32}-us[0-9]{1,2}`, cat, 75, "Mailchimp API Key")
+
 	// Stripe
 	r.register("stripe_secret", `(?i)sk_live_[0-9a-zA-Z]{24}`, cat, 90, "Stripe Secret Key")
 	r.register("stripe_restricted", `(?i)rk_live_[0-9a-zA-Z]{24}`, cat, 85, "Stripe Restricted Key")
@@ -34,12 +50,33 @@ func (r *Registry) registerCredentialPatterns() {
 	// JWT
 	r.register("jwt_token", `(?i)eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*`, cat, 75, "JWT Token")
 
+	// OAuth and Client Secrets
+	r.register("oauth_client_secret", `(?i)(client[_-]?secret|oauth[_-]?secret)\s*[=:]\s*['"]?[A-Za-z0-9_\-]{20,}`, cat, 85, "OAuth Client Secret")
+	r.register("oauth_refresh_token", `(?i)refresh[_-]?token\s*[=:]\s*['"]?[A-Za-z0-9_\-\.]{20,}`, cat, 80, "OAuth Refresh Token")
+	r.register("oauth_access_token", `(?i)access[_-]?token\s*[=:]\s*['"]?[A-Za-z0-9_\-\.]{20,}`, cat, 80, "OAuth Access Token")
+
+	// Anthropic/AI API Keys
+	r.register("anthropic_api_key", `sk-ant-api[0-9]{2}-[A-Za-z0-9_\-]{20,}`, cat, 90, "Anthropic API Key")
+	r.register("openai_api_key", `sk-[A-Za-z0-9]{20,}`, cat, 90, "OpenAI API Key")
+	r.register("openai_proj_key", `sk-proj-[A-Za-z0-9_\-]{20,}`, cat, 90, "OpenAI Project API Key")
+	r.register("cohere_api_key", `(?i)(cohere[_-]?api[_-]?key)\s*[=:]\s*['"]?[A-Za-z0-9]{40}`, cat, 85, "Cohere API Key")
+	r.register("huggingface_token", `hf_[A-Za-z0-9]{20,}`, cat, 80, "HuggingFace Token")
+
+	// Discord
+	r.register("discord_token", `[MN][A-Za-z0-9]{23,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}`, cat, 85, "Discord Bot Token")
+	r.register("discord_webhook", `https://discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_\-]+`, cat, 80, "Discord Webhook URL")
+
+	// Telegram
+	r.register("telegram_bot_token", `[0-9]{9,10}:[A-Za-z0-9_-]{35}`, cat, 80, "Telegram Bot Token")
+
 	// Generic patterns
 	r.register("api_key_assign", `(?i)api[_-]?key\s*[=:]\s*['"]?[A-Za-z0-9_\-]{20,}`, cat, 70, "API Key assignment")
 	r.register("secret_key_assign", `(?i)secret[_-]?key\s*[=:]\s*['"]?[A-Za-z0-9_\-]{20,}`, cat, 75, "Secret Key assignment")
 	r.register("password_assign", `(?i)password\s*[=:]\s*['"]?[^\s'"]{8,}`, cat, 70, "Password assignment")
+	r.register("password_json", `(?i)"password"\s*:\s*"[^"]{8,}"`, cat, 75, "Password in JSON")
 	r.register("bearer_token", `(?i)bearer\s+[A-Za-z0-9_\-\.]{20,}`, cat, 75, "Bearer token")
 	r.register("auth_header", `(?i)authorization:\s*bearer\s+[A-Za-z0-9_\-\.]+`, cat, 75, "Authorization header")
+	r.register("basic_auth", `(?i)authorization:\s*basic\s+[A-Za-z0-9+/=]+`, cat, 80, "Basic Auth header")
 
 	// Database connection strings
 	r.register("mongodb_uri", `(?i)mongodb(\+srv)?://[^:]+:[^@]+@`, cat, 85, "MongoDB URI with credentials")
@@ -275,6 +312,26 @@ func (r *Registry) registerIndirectInjectionPatterns() {
 // --- EXFILTRATION PATTERNS (PRE-HOOK) ---
 func (r *Registry) registerExfiltrationPatterns() {
 	cat := CategoryExfiltration
+
+	// Email addresses (potential data exfiltration)
+	r.register("email_address", `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`, cat, 50, "Email address")
+	r.register("email_mailto", `mailto:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`, cat, 55, "Mailto link")
+
+	// Phone numbers (US format)
+	// Phone number - requires at least one separator to avoid matching API keys/tokens
+	r.register("phone_us", `(?:\+1[-.\s])?\(?[0-9]{3}\)?[-.\s][0-9]{3}[-.\s][0-9]{4}`, cat, 45, "US Phone number")
+
+	// Social Security Numbers
+	r.register("ssn_pattern", `\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`, cat, 90, "Social Security Number")
+
+	// Credit Card Numbers (major brands)
+	r.register("cc_visa", `\b4[0-9]{12}(?:[0-9]{3})?\b`, cat, 95, "Visa Card Number")
+	r.register("cc_mastercard", `\b5[1-5][0-9]{14}\b`, cat, 95, "Mastercard Number")
+	r.register("cc_amex", `\b3[47][0-9]{13}\b`, cat, 95, "American Express Number")
+	r.register("cc_discover", `\b6(?:011|5[0-9]{2})[0-9]{12}\b`, cat, 95, "Discover Card Number")
+
+	// IP Addresses (potential target identification)
+	r.register("ipv4_address", `\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`, cat, 40, "IPv4 Address")
 
 	// Known exfil services
 	r.register("webhook_site", `(?i)webhook\.site`, cat, 70, "Webhook.site exfil service")
