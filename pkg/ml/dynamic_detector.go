@@ -619,7 +619,9 @@ func (d *DynamicThreatDetector) matchSemanticIntent(text string) SemanticMatchRe
 						continue
 					}
 					sim := d.wordSimilarity(aw, tw)
-					if sim > 0.7 {
+					// v5.3: Increased threshold from 0.7 to 0.85 to prevent
+					// "common" → "command" false positives (was 0.71 similarity)
+					if sim > 0.85 {
 						matchedWords++
 						totalScore += 0.15 * sim
 						break // Only count each anchor word once
@@ -1188,7 +1190,8 @@ func (d *DynamicThreatDetector) matchCategorySpecific(text string, category stri
 		for _, aw := range anchorWords {
 			for _, tw := range words {
 				sim := d.wordSimilarity(aw, tw)
-				if sim > 0.7 {
+				// v5.3: Increased threshold from 0.7 to 0.85 for consistency
+				if sim > 0.85 {
 					totalScore += 0.1 * sim
 				}
 			}

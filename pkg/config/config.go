@@ -90,6 +90,7 @@ type Config struct {
 // NewDefaultConfig creates a Config with sensible defaults
 // All settings can be overridden via environment variables
 func NewDefaultConfig() *Config {
+
 	cfg := &Config{
 		// Core
 		AuditLogPath:        GetEnv("CITADEL_AUDIT_LOG", "audit_events.jsonl"),

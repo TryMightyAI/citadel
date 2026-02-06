@@ -13,6 +13,7 @@ const (
 	SignalSourceDeeperGo  SignalSource = "deeper_go"  // Re-analysis when BERT uncertain
 	SignalSourceContext   SignalSource = "context"    // Educational/defensive context
 	SignalSourceTaskDrift SignalSource = "task_drift" // Task drift detection
+	SignalSourceMultiBERT SignalSource = "multi_bert" // Multi-BERT ensemble (Phase 1+)
 )
 
 // ObfuscationType identifies the type of obfuscation detected
@@ -193,6 +194,8 @@ func getDefaultWeight(source SignalSource) float64 {
 		return 0.3
 	case SignalSourceTaskDrift:
 		return 0.8
+	case SignalSourceMultiBERT:
+		return 0.85 // High weight - ensemble between BERT (0.8) and Safeguard (0.9)
 	default:
 		return 0.5
 	}

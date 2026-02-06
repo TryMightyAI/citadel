@@ -87,7 +87,7 @@ func TestRedactSecrets_OtherPatterns(t *testing.T) {
 		contains string
 	}{
 		{"aws_key", "Key is AKIAIOSFODNN7EXAMPLE", "[AWS_KEY_REDACTED_BY_CITADEL]"},
-		{"stripe_live", "Using rk_live_XXXXXXXXXXXXXXXXXXXX", "[STRIPE_KEY_REDACTED_BY_CITADEL]"},
+		{"stripe_live", "Using sk_live_4eC39HqLyjWDarjtT1zdp7dc", "[STRIPE_KEY_REDACTED_BY_CITADEL]"},
 		{"github_pat", "Token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "[GITHUB_TOKEN_REDACTED_BY_CITADEL]"},
 		{"email", "Contact admin@example.com for help", "[EMAIL_REDACTED]"},
 		{"ssn", "SSN: 123-45-6789", "[SSN_REDACTED]"},

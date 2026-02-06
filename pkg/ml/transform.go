@@ -81,6 +81,10 @@ var decoders = []decoder{
 // Use RegisterDecoder to add Pro-only decoders at init time.
 var proDecoders []decoder
 
+// disabledOSSDecoders tracks OSS decoders that Pro has disabled/replaced.
+// Key is the function name (for identification purposes).
+var disabledOSSDecoders = make(map[ObfuscationType]bool)
+
 // RegisterDecoder adds a decoder to the Pro decoder list.
 // Call this from init() in Pro packages to register advanced decoders.
 // Example: ml.RegisterDecoder(TryConfusableSkeletonLite, ml.ObfuscationHomoglyphs, false)
@@ -88,14 +92,26 @@ func RegisterDecoder(fn func(string) string, obfType ObfuscationType, isChange b
 	proDecoders = append(proDecoders, decoder{fn: fn, obfType: obfType, isChange: isChange})
 }
 
+// DisableOSSDecoder disables an OSS decoder by its ObfuscationType.
+// Call this from Pro init() to replace OSS decoders with better Pro implementations.
+// Example: ml.DisableOSSDecoder(ml.ObfuscationHomoglyphs) // Pro has TryConfusableSkeletonLite
+func DisableOSSDecoder(obfType ObfuscationType) {
+	disabledOSSDecoders[obfType] = true
+}
+
 // allDecoders returns the combined list of OSS and Pro decoders.
+// OSS decoders that have been disabled by Pro are filtered out.
 func allDecoders() []decoder {
-	if len(proDecoders) == 0 {
+	if len(proDecoders) == 0 && len(disabledOSSDecoders) == 0 {
 		return decoders
 	}
-	// Combine: OSS decoders first, then Pro decoders
+	// Combine: OSS decoders (excluding disabled) first, then Pro decoders
 	combined := make([]decoder, 0, len(decoders)+len(proDecoders))
-	combined = append(combined, decoders...)
+	for _, d := range decoders {
+		if !disabledOSSDecoders[d.obfType] {
+			combined = append(combined, d)
+		}
+	}
 	combined = append(combined, proDecoders...)
 	return combined
 }
@@ -310,15 +326,22 @@ func NormalizeLeetspeak(text string) string {
 }
 
 // TryLeetspeakDecode attempts to decode leetspeak and returns the decoded text
-// if it reveals threat patterns
+// if it reveals threat patterns that weren't visible in the original text.
+// v5.3: Only flag as leetspeak if decoding REVEALS NEW attack patterns.
+// This prevents false positives like "Turn 1: attack" being flagged because
+// "1" gets normalized to "I" even though the attack was already visible.
 func TryLeetspeakDecode(text string) string {
 	normalized := NormalizeLeetspeak(text)
 	if normalized == "" {
 		return ""
 	}
 
-	// Check if normalized text reveals threat patterns
-	if DetectsAttackPatterns(normalized) {
+	// Check if normalized text reveals threat patterns that weren't visible before
+	// Only count as leetspeak if decoding reveals something new
+	normalizedHasPatterns := DetectsAttackPatterns(normalized)
+	originalHasPatterns := DetectsAttackPatterns(text)
+
+	if normalizedHasPatterns && !originalHasPatterns {
 		return normalized
 	}
 
@@ -460,11 +483,13 @@ func DetectsAttackPatterns(text string) bool {
 	}
 
 	// Role-play/jailbreak patterns
+	// v5.4 Fix: Removed "dan " - too many false positives on the name Dan.
+	// Use more specific patterns like "dan mode" in intent_type_classifier.go
 	jailbreakPatterns := []string{
 		"pretend", "act as", "roleplay", "you are now",
 		"developer mode", "sudo", "admin", "root",
 		"no restrictions", "unrestricted", "uncensored",
-		"jailbreak", "dan ", "do anything now",
+		"jailbreak", "do anything now", "can do anything",
 	}
 	for _, p := range jailbreakPatterns {
 		if strings.Contains(lowText, p) {

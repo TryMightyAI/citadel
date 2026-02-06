@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/TryMightyAI/citadel/pkg/config"
+	"github.com/TryMightyAI/citadel/pkg/telemetry"
 )
 
 // FastPathThresholds defines when to skip LLM entirely
@@ -330,6 +331,20 @@ func DefaultDetectionOptions() *DetectionOptions {
 	}
 }
 
+// isStaticContent returns true if the content type indicates static content scanning
+// (documents, images, PDFs) rather than conversational AI interactions.
+// Static content should NOT receive intent-based discounting because there's no
+// "conversation" context - if a document contains XXE or prompt injection patterns,
+// it should be flagged regardless of whether the text mentions "educational" topics.
+func isStaticContent(contentType string) bool {
+	switch contentType {
+	case "image", "image_ocr", "pdf", "pdf_text", "document", "file", "xml", "svg":
+		return true
+	default:
+		return false
+	}
+}
+
 // Detect runs hierarchical detection layers with bi-directional flow
 // This is the default method using auto mode and balanced profile
 func (hd *HybridDetector) Detect(ctx context.Context, text string) (*HybridResult, error) {
@@ -429,6 +444,25 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 				mtSignal.AddReason(fmt.Sprintf("Pattern: %s (%.0f%%)", pm.PatternName, pm.Confidence*100))
 			}
 			aggregator.AddSignal(mtSignal)
+
+			// Track multi-turn detection telemetry
+			if telemetry.GlobalClient != nil {
+				patternNames := make([]string, 0, len(mtResult.Detection.PatternMatches))
+				for _, pm := range mtResult.Detection.PatternMatches {
+					patternNames = append(patternNames, pm.PatternName)
+				}
+				telemetry.GlobalClient.TrackWithContext("multiturn_detection", map[string]interface{}{
+					"turn_count":         mtResult.SessionTurns,
+					"phase":              mtResult.Detection.SemanticPhase,
+					"phase_confidence":   mtResult.Detection.SemanticConfidence,
+					"drift":              mtResult.Detection.TrajectoryDrift,
+					"drift_accelerating": mtResult.Detection.DriftAccelerating,
+					"pattern_matches":    patternNames,
+					"final_score":        mtResult.Detection.FinalScore,
+					"should_block":       mtResult.ShouldBlock,
+					"latency_ms":         result.MultiTurnLatencyMs,
+				}, "", opts.SessionID)
+			}
 
 			// HIGH CONFIDENCE MULTI-TURN BLOCK
 			// If multi-turn analysis returns high confidence block, use it immediately
@@ -615,11 +649,15 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 
 	// =======================================================================
 	// CONTEXT DETECTION: Reduce FP for educational/defensive content
+	// v5.1: Skip context discounting entirely for static content scans.
+	// Static content (documents, images, PDFs) is not conversational - if it
+	// contains attack patterns embedded in "educational" language, flag it.
 	// =======================================================================
 	ctxResult := DetectContext(text)
 	contextDetected := ctxResult.IsEducational || ctxResult.IsDefensive || ctxResult.IsCodeReview
+	isStaticScan := isStaticContent(opts.ContentType)
 
-	if contextDetected {
+	if contextDetected && !isStaticScan {
 		contextSignal := NewDetectionSignal(SignalSourceContext)
 		contextSignal.Score = 0.1 // Low score indicates safe
 		contextSignal.Confidence = ctxResult.Confidence
@@ -636,7 +674,13 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 
 	// Apply context modifier to heuristic score if appropriate
 	// v5.0: Skip context modifier for VERY high scores (>=0.9) - these are pattern-matched attacks
-	if result.HeuristicScore > 0.1 && result.HeuristicScore < 0.9 && contextDetected {
+	// v5.1: Skip context modifier for static content - no conversational context to consider
+	// v5.2: CRITICAL FIX - Use rawHeuristicScore and lower threshold to 0.80.
+	// Attack patterns like "ignore all instructions" return 0.85, which is < 0.9 but should NOT
+	// be discounted just because they're wrapped in "educational" framing. If the raw heuristic
+	// detected attack patterns (score >= 0.80), skip ALL discounting.
+	attackPatternsDetected := rawHeuristicScore >= 0.80
+	if result.HeuristicScore > 0.1 && !attackPatternsDetected && contextDetected && !isStaticScan {
 		modifiedScore := ApplyContextModifier(result.HeuristicScore, ctxResult)
 		if modifiedScore != result.HeuristicScore {
 			result.HeuristicScore = modifiedScore
@@ -656,8 +700,10 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// DOMAIN CONTEXT DETECTION (v4.7 Enhancement)
 	// Reduces FP for technical domains: "ignore" in git, "override" in CSS, etc.
 	// v5.0: Skip for very high scores (>=0.9) - pattern-matched attacks
+	// v5.1: Skip for static content - no domain context applies
+	// v5.2: Skip if attack patterns detected (rawHeuristicScore >= 0.80)
 	// =======================================================================
-	if result.HeuristicScore > 0.1 && result.HeuristicScore < 0.9 {
+	if result.HeuristicScore > 0.1 && !attackPatternsDetected && !isStaticScan {
 		domainResult := DetectDomainWithConfidence(text)
 		if domainResult.Domain != DomainUnknown && domainResult.Confidence >= 0.5 {
 			// Get keywords that actually matched from the configured scorer weights
@@ -678,8 +724,10 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// BENIGN PHRASE ALLOWLIST (v4.7 Enhancement)
 	// Applies negative weights from scorer_weights.yaml benign_patterns section
 	// v5.0: Skip for very high scores (>=0.9) - pattern-matched attacks
+	// v5.1: Skip for static content - benign phrases don't apply to documents
+	// v5.2: Skip if attack patterns detected (rawHeuristicScore >= 0.80)
 	// =======================================================================
-	if result.HeuristicScore > 0.1 && result.HeuristicScore < 0.9 {
+	if result.HeuristicScore > 0.1 && !attackPatternsDetected && !isStaticScan {
 		discount, benignMatches := ApplyBenignPatternDiscount(text)
 		if discount < 0 && len(benignMatches) > 0 {
 			// Apply discount (discount is negative, so this reduces score)
@@ -763,17 +811,14 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 			// Calculate intent-based discount
 			result.IntentDiscount = IntentTypeDiscount(intentTypeResult.PrimaryIntent, intentTypeResult.Confidence)
 
-			// Read fast-path thresholds to check if we should skip discount
-			hd.mu.RLock()
-			fastPathThreshold := hd.FastPathThresholds.HighConfidenceBlock
-			hd.mu.RUnlock()
-
 			// Apply intent discount to heuristic score if significant
-			// KEY FIX: Don't apply discount if score is already at fast-path block threshold
-			// This prevents intent misclassification from allowing obvious attacks
 			// v4.10: Also skip discount if MCP attack was detected (JSON-based attacks)
-			scoreAlreadyHighEnoughToBlock := result.HeuristicScore >= fastPathThreshold
-			if result.IntentDiscount > 0 && result.HeuristicScore > 0.1 && !scoreAlreadyHighEnoughToBlock && !mcpAttackDetected {
+			// v5.1: Skip discounting entirely for static content (documents, images, PDFs)
+			// v5.2: CRITICAL FIX - Use attackPatternsDetected (rawHeuristicScore >= 0.80)
+			// instead of current score. Attack patterns like "ignore all instructions" (0.85)
+			// should NEVER be discounted, even if wrapped in "educational" framing.
+			isStatic := isStaticContent(opts.ContentType)
+			if result.IntentDiscount > 0 && result.HeuristicScore > 0.1 && !attackPatternsDetected && !mcpAttackDetected && !isStatic {
 				originalScore := result.HeuristicScore
 				result.HeuristicScore = result.HeuristicScore * (1 - result.IntentDiscount)
 
@@ -785,6 +830,24 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 				intentSignal.AddReason(fmt.Sprintf("Intent: %s (discount: %.0f%%, score: %.2f->%.2f)",
 					result.IntentType, result.IntentDiscount*100, originalScore, result.HeuristicScore))
 				aggregator.AddSignal(intentSignal)
+			} else if attackPatternsDetected && result.IntentDiscount > 0 {
+				// v5.2: Log that we skipped the discount for attack patterns
+				intentSignal := NewDetectionSignal(SignalSourceContext)
+				intentSignal.Label = "INTENT_TYPE_SKIPPED"
+				intentSignal.Score = 0 // No discount applied
+				intentSignal.Confidence = intentTypeResult.Confidence
+				intentSignal.AddReason(fmt.Sprintf("Intent: %s - discount skipped (attack patterns detected, raw=%.2f)",
+					result.IntentType, rawHeuristicScore))
+				aggregator.AddSignal(intentSignal)
+			} else if isStatic && result.IntentDiscount > 0 {
+				// v5.1: Log that we skipped the discount for static content
+				intentSignal := NewDetectionSignal(SignalSourceContext)
+				intentSignal.Label = "INTENT_TYPE_SKIPPED"
+				intentSignal.Score = 0 // No discount applied
+				intentSignal.Confidence = intentTypeResult.Confidence
+				intentSignal.AddReason(fmt.Sprintf("Intent: %s - discount skipped (static content: %s)",
+					result.IntentType, opts.ContentType))
+				aggregator.AddSignal(intentSignal)
 			} else if mcpAttackDetected && result.IntentDiscount > 0 {
 				// v4.10: Log that we skipped the discount for MCP attacks
 				intentSignal := NewDetectionSignal(SignalSourceContext)
@@ -793,15 +856,6 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 				intentSignal.Confidence = intentTypeResult.Confidence
 				intentSignal.AddReason(fmt.Sprintf("Intent: %s - discount skipped (MCP attack pattern: %s)",
 					result.IntentType, mcpAttackType))
-				aggregator.AddSignal(intentSignal)
-			} else if scoreAlreadyHighEnoughToBlock && result.IntentDiscount > 0 {
-				// Log that we skipped the discount for high-confidence attacks
-				intentSignal := NewDetectionSignal(SignalSourceContext)
-				intentSignal.Label = "INTENT_TYPE_SKIPPED"
-				intentSignal.Score = 0 // No discount applied
-				intentSignal.Confidence = intentTypeResult.Confidence
-				intentSignal.AddReason(fmt.Sprintf("Intent: %s - discount skipped (score %.2f >= fast-path threshold %.2f)",
-					result.IntentType, result.HeuristicScore, fastPathThreshold))
 				aggregator.AddSignal(intentSignal)
 			}
 
@@ -855,9 +909,11 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 
 	if fastPathEnabled {
 		// Very high heuristic score = obvious attack, block without LLM
-		// KEY FIX: Skip fast-path block if educational/defensive context detected
+		// v5.2 FIX: Skip fast-path block if educational/defensive context detected
 		// This allows BERT to make the final call on gray-area content like CTF writeups
-		if result.HeuristicScore >= fastPathThresholds.HighConfidenceBlock && !contextDetected {
+		// v5.3 FIX: BUT proceed with fast-path block if attackPatternsDetected (rawScore >= 0.80)
+		// This prevents attacks from bypassing detection by embedding attack text in "educational" framing
+		if result.HeuristicScore >= fastPathThresholds.HighConfidenceBlock && (!contextDetected || attackPatternsDetected) {
 			result.CombinedScore = result.HeuristicScore
 			result.RiskLevel = "CRITICAL"
 			result.Action = "BLOCK"
@@ -1074,14 +1130,50 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	}
 
 	// =======================================================================
+	// v5.4: COMPOUND THREAT DETECTION - Obfuscation + Semantic Attack Pattern
+	// When obfuscation is detected AND semantic matching finds a known attack
+	// pattern (skeleton_key, injection, etc.), this is highly suspicious.
+	// Compound these signals instead of allowing context reduction to water them down.
+	// =======================================================================
+	semanticAttackPatterns := map[string]bool{
+		"skeleton_key":         true,
+		"injection":            true,
+		"prompt_injection":     true,
+		"context_manipulation": true,
+		"crescendo_exploit":    true,
+		"mcp_injection":        true,
+		"command_injection":    true,
+		"data_exfiltration":    true,
+		"rogue_agent":          true,
+		"config_hijacking":     true,
+	}
+	semanticAttackDetected := semanticAttackPatterns[result.SemanticCategory]
+
+	// If obfuscation + semantic attack pattern detected, compound the threat
+	if deobResult.WasDeobfuscated && semanticAttackDetected && result.SemanticScore > 0.5 {
+		// This is a compound threat - obfuscated content with attack pattern
+		// Boost score and mark as attack pattern to skip context reduction
+		attackPatternsDetected = true
+		originalScore := result.CombinedScore
+		// Apply 1.5x boost, capped at 0.95
+		result.CombinedScore = math.Min(result.CombinedScore*1.5, 0.95)
+		result.Reason = fmt.Sprintf("Compound threat: obfuscation + %s pattern (%.0f%%→%.0f%%)",
+			result.SemanticCategory, originalScore*100, result.CombinedScore*100)
+		log.Printf("[COMPOUND] Obfuscation + %s detected: %.2f→%.2f (attack patterns flagged)",
+			result.SemanticCategory, originalScore, result.CombinedScore)
+	}
+
+	// =======================================================================
 	// v4.10: STRUCTURAL CONTEXT - SEMANTIC BOOST DAMPENING
 	// If structural context was applied to HeuristicScore, also check if
 	// semantic score boosted the combined score back up. If so, dampen
 	// the semantic contribution (not double-dampen the heuristic part).
+	// v5.4: Skip dampening if attack patterns detected (compound threat or heuristic)
 	// =======================================================================
 	var structuralContextApplied string
 	// v4.10: Lower threshold to 0.30 (start of WARN zone) to catch semantic boost earlier
-	if structuralCtx != nil && semanticEnabled && result.SemanticScore > 0 && result.CombinedScore > 0.30 {
+	// v5.4: Skip if attackPatternsDetected (compound threat already boosted score)
+	if structuralCtx != nil && semanticEnabled && result.SemanticScore > 0 && result.CombinedScore > 0.30 && !attackPatternsDetected {
 		// Semantic score boosted us back up - dampen only the semantic contribution
 		// Use a softer dampening since heuristic is already dampened
 		softDampen := 0.7 // Keep 70% of semantic contribution
@@ -1094,9 +1186,10 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 			result.Reason = fmt.Sprintf("Structural context (%s): semantic dampened %.0f%%→%.0f%%",
 				structuralCtx.Type, originalScore*100, result.CombinedScore*100)
 		}
-	} else if structuralCtx != nil && result.CombinedScore > 0.30 {
+	} else if structuralCtx != nil && result.CombinedScore > 0.30 && !attackPatternsDetected {
 		// v4.10: Even without semantic, if CombinedScore is still high, apply dampening
 		// This catches cases where heuristic dampening wasn't applied or was insufficient
+		// v5.4: Skip if attackPatternsDetected (compound threat already boosted score)
 		dampenFactor, minFloor := GetStructuralDampeningFactor(structuralCtx.Type, structuralCtx.Confidence)
 		if dampenFactor > 0 {
 			originalScore := result.CombinedScore
@@ -1116,7 +1209,10 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// === CONTEXT-AWARE SCORE REDUCTION ===
 	// Apply context modifier to combined score for educational/defensive content
 	// This catches cases where semantic similarity flags educational examples
-	if contextDetected {
+	// v5.3: Skip this reduction if attack patterns were detected (rawHeuristicScore >= 0.80)
+	// This prevents attacks like "ignore your safety guidelines" from being discounted
+	// just because they're wrapped in educational framing
+	if contextDetected && !attackPatternsDetected {
 		// Educational content with attack examples should get reduced even after
 		// semantic matching. Use a softer reduction since we're modifying final score.
 		if ctxResult.IsEducational && ctxResult.Confidence >= 0.7 {
@@ -1180,7 +1276,8 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// BERT generalizes; pattern lists don't.
 	rawScoreWasHigh := rawHeuristicScore >= 0.5
 
-	shouldEscalateToBERT := (result.CombinedScore >= 0.3 && result.CombinedScore <= 0.7) ||
+	// v5.3: Widened from 0.3-0.7 to 0.2-0.8 to catch more edge cases
+	shouldEscalateToBERT := (result.CombinedScore >= 0.2 && result.CombinedScore <= 0.8) ||
 		deobResult.WasDeobfuscated ||
 		result.IntentType == "ATTACK" ||
 		isSubstantiveRequest || // NEW: Always check substantive requests with BERT
@@ -1432,17 +1529,28 @@ func (hd *HybridDetector) detectWithProfile(ctx context.Context, text string, op
 	// === Determine Risk Level and Action ===
 	// Threshold adjusted: WARN starts at 0.4 (was 0.3) to reduce false positives
 	// from semantic similarity on benign requests like "help me debug"
+	//
+	// v5.5: MODE-AWARE THRESHOLDS
+	// "secure" mode uses lower BLOCK threshold (55%) for more aggressive protection
+	// "fast" mode uses standard threshold (70%) for fewer false positives
+	blockThreshold := 0.70 // Standard threshold
+	warnThreshold := 0.40  // Standard warn threshold
+	if opts.Mode == DetectionModeSecure {
+		blockThreshold = 0.55 // More aggressive for secure mode
+		warnThreshold = 0.35
+	}
+
 	switch {
 	case result.CombinedScore >= 0.9:
 		result.RiskLevel = "CRITICAL"
 		result.Action = "BLOCK"
-	case result.CombinedScore >= 0.7:
+	case result.CombinedScore >= blockThreshold:
 		result.RiskLevel = "HIGH"
 		result.Action = "BLOCK"
 	case result.CombinedScore >= 0.5:
 		result.RiskLevel = "MEDIUM"
 		result.Action = "WARN"
-	case result.CombinedScore >= 0.4:
+	case result.CombinedScore >= warnThreshold:
 		result.RiskLevel = "LOW"
 		result.Action = "WARN"
 	default:

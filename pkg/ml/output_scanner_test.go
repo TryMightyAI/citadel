@@ -30,7 +30,7 @@ func TestOutputScanner_Credentials(t *testing.T) {
 		},
 		{
 			name:        "Generic API Key",
-			text:        "api_key=test_key_not_real_0000000000000000",
+			text:        "api_key=sk_live_XXXXXXXXXXXXXXXXXXXXXXXXXXXX",
 			wantSafe:    false,
 			wantMinRisk: 50,
 		},

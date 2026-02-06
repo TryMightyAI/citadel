@@ -141,7 +141,7 @@ func TestHybridDetector_Detect_SecretsBlock(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with text containing what looks like a secret
-	result, err := hd.Detect(ctx, "Here is my API key: rk_live_XXXXXXXXXXXXXXXX")
+	result, err := hd.Detect(ctx, "Here is my API key: sk_live_1234567890abcdef")
 	if err != nil {
 		t.Fatalf("Detect failed: %v", err)
 	}

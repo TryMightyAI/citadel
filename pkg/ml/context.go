@@ -1062,6 +1062,8 @@ const (
 	StructuralContextLegal StructuralContextType = "legal_document"
 	// v4.12: Invoices, receipts, and financial documents (OCR from images)
 	StructuralContextInvoice StructuralContextType = "invoice_receipt"
+	// v5.3: .gitignore and similar ignore pattern files
+	StructuralContextGitignore StructuralContextType = "gitignore_file"
 )
 
 // StructuralContextResult contains the result of structural context detection
@@ -1130,6 +1132,96 @@ func DetectStructuralContext(text string) StructuralContextResult {
 		result.Type = StructuralContextCodeBlock
 		result.Confidence = minFloat64(float64(codeSignals)*0.15, 0.95)
 		result.Signals = append(result.Signals, "code_structure")
+		return result
+	}
+
+	// 1b. GITIGNORE FILE DETECTION (v5.3)
+	// .gitignore and similar ignore pattern files have distinctive structure:
+	// - Lines starting with # (comments)
+	// - Lines with wildcards (*.pyc, *.log)
+	// - Lines ending with / (directory patterns)
+	// - Lines starting with ! (negation)
+	// - Common entries: __pycache__, node_modules, .env
+	// These files naturally contain words like "ignore" that trigger false positives
+	gitignoreSignals := 0
+	commentLines := 0
+	wildcardLines := 0
+	directoryPatterns := 0
+	negationPatterns := 0
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		// Comment lines (very common in gitignore)
+		if strings.HasPrefix(trimmed, "#") {
+			commentLines++
+			// Extra signal if comment mentions "gitignore", "git", or "ignore"
+			lowerLine := strings.ToLower(trimmed)
+			if strings.Contains(lowerLine, "gitignore") || strings.Contains(lowerLine, ".gitignore") {
+				gitignoreSignals += 3 // Strong signal
+			} else if strings.Contains(lowerLine, "ignore") && !strings.Contains(lowerLine, "ignore all") {
+				gitignoreSignals++
+			}
+			continue
+		}
+
+		// Wildcard patterns (*.pyc, *.log, **/cache)
+		if strings.Contains(trimmed, "*") {
+			wildcardLines++
+			gitignoreSignals++
+		}
+
+		// Directory patterns ending with /
+		if strings.HasSuffix(trimmed, "/") {
+			directoryPatterns++
+			gitignoreSignals++
+		}
+
+		// Negation patterns starting with !
+		if strings.HasPrefix(trimmed, "!") {
+			negationPatterns++
+			gitignoreSignals++
+		}
+
+		// Common gitignore entries (without wildcards)
+		commonGitignoreEntries := []string{
+			"__pycache__", "node_modules", ".env", ".venv", "venv/",
+			".idea", ".vscode", ".DS_Store", "Thumbs.db",
+			"dist/", "build/", "target/", "bin/", "obj/",
+			"*.pyc", "*.pyo", "*.class", "*.o", "*.a",
+			".cache", ".pytest_cache", ".mypy_cache",
+			"coverage/", ".coverage", "htmlcov/",
+			"*.log", "*.tmp", "*.bak", "*.swp",
+			".git/", ".svn/", ".hg/",
+		}
+		for _, entry := range commonGitignoreEntries {
+			if trimmed == entry || strings.HasPrefix(trimmed, entry) {
+				gitignoreSignals++
+				break
+			}
+		}
+	}
+
+	// Multiple comment lines + wildcards/directories = very likely gitignore
+	if commentLines >= 1 {
+		gitignoreSignals += commentLines
+	}
+	if wildcardLines >= 2 {
+		gitignoreSignals += 2
+	}
+	if directoryPatterns >= 1 {
+		gitignoreSignals++
+	}
+
+	// Require strong signals to classify as gitignore
+	// Minimum: 4 signals (e.g., 2 comments + 2 wildcards, or 1 explicit gitignore mention + 1 wildcard)
+	if gitignoreSignals >= 4 {
+		result.Type = StructuralContextGitignore
+		result.Confidence = minFloat64(float64(gitignoreSignals)*0.12, 0.95)
+		result.Signals = append(result.Signals, "gitignore_structure")
 		return result
 	}
 
@@ -1715,6 +1807,8 @@ var structuralDampeningFactors = map[StructuralContextType]StructuralDampeningCo
 	StructuralContextLegal: {BaseFactor: 0.60, MinResult: 0.15}, // High trust - formal legal language
 	// v4.12: Invoices/receipts - high trust (OCR from financial documents)
 	StructuralContextInvoice: {BaseFactor: 0.65, MinResult: 0.10}, // High trust - financial documents
+	// v5.3: Gitignore files - high trust (config files with distinctive patterns)
+	StructuralContextGitignore: {BaseFactor: 0.70, MinResult: 0.10}, // Very high trust - "ignore" is benign here
 }
 
 // GetStructuralDampeningFactor returns the dampening factor for a context type

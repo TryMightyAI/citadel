@@ -391,9 +391,11 @@ func (r *Registry) registerJailbreakPatterns() {
 	r.register("jailbreak_no_restrict", `(?i)act\s+as\s+if\s+you\s+have\s+no\s+restrictions`, cat, 75, "No restrictions prompt")
 	r.register("jailbreak_pretend", `(?i)pretend\s+(you\s+are|to\s+be)\s+(a|an)?\s*(hacker|attacker)`, cat, 75, "Pretend to be attacker")
 
-	// DAN and similar
-	r.register("jailbreak_dan", `(?i)\bDAN\b.*mode`, cat, 70, "DAN jailbreak")
+	// v5.4 Fix: Removed standalone DAN pattern - too many false positives on the name "Dan"
+	// The pattern `\bDAN\b.*mode` would match "Hey Dan, what mode do you want?"
+	// BERT ML model handles DAN jailbreaks with proper context. Keep only explicit mode patterns.
 	r.register("jailbreak_developer", `(?i)developer\s+mode`, cat, 65, "Developer mode jailbreak")
+	r.register("jailbreak_mode", `(?i)jailbreak\s+mode`, cat, 70, "Jailbreak mode request")
 	r.register("jailbreak_sudo", `(?i)sudo\s+mode`, cat, 65, "Sudo mode jailbreak")
 
 	// Context manipulation
